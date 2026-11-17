@@ -4,6 +4,8 @@ A Chrome extension for reviewing LinkedIn people-search results and My Network s
 
 > Independent community project. Not affiliated with, endorsed by, or sponsored by LinkedIn.
 
+Developed by [Sebastián Bocek](https://github.com/sebastianbocek).
+
 ## Download and install
 
 [⬇ **Download the extension (ZIP)**](https://github.com/sebastianbocek/linkedin-auto-connect-chrome-extension/archive/refs/heads/main.zip)
