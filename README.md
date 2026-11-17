@@ -6,6 +6,17 @@ A Chrome extension for reviewing LinkedIn people-search results and My Network s
 
 Developed by [Sebastián Bocek](https://github.com/sebastianbocek).
 
+## How to use
+
+1. Open a LinkedIn **People** search in the tab you want to process. For example: [B2B AI people search](https://www.linkedin.com/search/results/people/?keywords=b2b%20ai&origin=CLUSTER_EXPANSION). The search URL sets the result set; the extension keywords filter the profiles it processes.
+2. Open the **LinkedIn Auto-Connect** extension and add the keywords you want to find in profile headlines, titles, and current-position text.
+3. Set the maximum number of connections or profiles to extract. Enter `0` for unlimited processing.
+4. Leave **No conectar, solo extraer** unchecked to connect with matching profiles and collect them in the CSV. Turn it on to collect profiles without sending invitations.
+5. Click **Iniciar**. The extension processes the results and advances to the next page when needed.
+6. Click **Descargar CSV** to save the collected profile data.
+
+You can also use the extension on LinkedIn **My Network → Grow** suggestions.
+
 ## Download and install
 
 [⬇ **Download the extension (ZIP)**](https://github.com/sebastianbocek/linkedin-auto-connect-chrome-extension/archive/refs/heads/main.zip)
@@ -13,7 +24,6 @@ Developed by [Sebastián Bocek](https://github.com/sebastianbocek).
 1. Download and extract the ZIP file.
 2. Open `chrome://extensions/` in Chrome and turn on **Developer mode**.
 3. Click **Load unpacked** and select the extracted folder containing `manifest.json`.
-4. Open LinkedIn people-search results or **My Network → Grow**, open the extension, configure keywords and the action limit, then click **Iniciar**.
 
 ## Preview
 
@@ -27,8 +37,7 @@ Developed by [Sebastián Bocek](https://github.com/sebastianbocek).
 - If LinkedIn asks whether to add a note, selects **Send without a note** and continues.
 - Scrolls through people-search results and advances to the next page when the current results are exhausted.
 - Matching profile names, categories, locations, and LinkedIn links are collected for CSV export by default.
-- Enable **No conectar, solo extraer** to collect profiles without sending connection invitations. The configured limit then counts extracted profiles.
-- Set a maximum number of connections or extracted profiles; enter `0` for unlimited processing.
+- The **No conectar, solo extraer** mode does not send connection invitations and counts extracted profiles toward the configured limit.
 - View and copy the activity log from the popup.
 - Stops when LinkedIn displays its weekly connection invitation limit.
 
@@ -42,16 +51,30 @@ This tool automates actions on LinkedIn. Review your configuration and use it th
 
 ## Español
 
-Extensión de Chrome para revisar resultados de búsqueda de personas y sugerencias de LinkedIn. Configura keywords en la ventana de la extensión y elige un límite de acciones.
+### Cómo usar
+
+1. Abre en la pestaña de Chrome una búsqueda de personas de LinkedIn. Por ejemplo: [búsqueda de personas B2B AI](https://www.linkedin.com/search/results/people/?keywords=b2b%20ai&origin=CLUSTER_EXPANSION). La URL determina los resultados; las keywords de la extensión filtran los perfiles que procesará.
+2. Abre la extensión **LinkedIn Auto-Connect** y agrega las keywords que quieras buscar en los titulares, cargos y puestos actuales de los perfiles.
+3. Define el máximo de conexiones o perfiles para extraer. Escribe `0` para continuar sin límite.
+4. Deja desmarcada **No conectar, solo extraer** para conectar con perfiles coincidentes y recopilar sus datos en el CSV. Actívala para extraer perfiles sin enviar invitaciones.
+5. Pulsa **Iniciar**. La extensión procesa los resultados y avanza a la página siguiente cuando corresponde.
+6. Pulsa **Descargar CSV** para guardar los datos recopilados.
+
+También puedes usar la extensión en las sugerencias de **My Network → Grow** de LinkedIn.
+
+### Instalación
+
+1. [Descarga el ZIP](https://github.com/sebastianbocek/linkedin-auto-connect-chrome-extension/archive/refs/heads/main.zip) y descomprímelo.
+2. Abre `chrome://extensions/` y activa el **Modo desarrollador**.
+3. Pulsa **Cargar descomprimida** y selecciona la carpeta que contiene `manifest.json`.
+
+### Funciones
 
 - Agrega o quita keywords desde la interfaz. La coincidencia no distingue mayúsculas y acepta una keyword dentro de una frase más larga, por ejemplo `B2B` en `B2B Outbound`.
 - Busca en el titular, cargo y puesto actual de cada ficha.
 - Pulsa únicamente **Connect**. Registra y omite perfiles con estado **Pending**, **Follow** o **Message**.
 - Si LinkedIn pregunta si quieres agregar una nota, pulsa **Send without a note** y continúa.
-- Desplaza los resultados y avanza a la página siguiente al terminar la actual.
-- Recopila nombre, categoría, ubicación y enlace de perfiles coincidentes para exportarlos a CSV.
-- Activa **No conectar, solo extraer** para no enviar invitaciones. En ese modo, el límite cuenta perfiles extraídos.
-- Define un máximo de conexiones o perfiles extraídos; `0` significa ilimitado.
+- Recopila nombre, categoría, ubicación y enlace de los perfiles coincidentes para exportarlos a CSV.
 - Muestra un registro de actividad que puedes copiar desde la interfaz.
 - Se detiene si LinkedIn muestra el límite semanal de invitaciones.
 
