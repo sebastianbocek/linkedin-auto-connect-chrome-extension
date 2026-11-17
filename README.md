@@ -13,6 +13,10 @@ A Chrome extension for reviewing LinkedIn people-search results and My Network s
 3. Click **Load unpacked** and select the extracted folder containing `manifest.json`.
 4. Open LinkedIn people-search results or **My Network → Grow**, open the extension, configure keywords and the action limit, then click **Iniciar**.
 
+## Preview
+
+![LinkedIn Auto-Connect popup with configurable keywords, CSV export, and activity log](assets/extension-preview.png)
+
 ## Features
 
 - Add and remove profile keywords in the popup. Matching is case-insensitive and accepts a keyword within a longer phrase, such as `B2B` in `B2B Outbound`.
