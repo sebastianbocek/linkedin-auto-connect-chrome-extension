@@ -36,7 +36,7 @@ You can also use the extension on LinkedIn **My Network → Grow** suggestions.
 - Clicks **Connect** only. Profiles marked **Pending**, **Follow**, or **Message** are logged and skipped.
 - If LinkedIn asks whether to add a note, selects **Send without a note** and continues.
 - Scrolls through people-search results and advances to the next page when the current results are exhausted.
-- Matching profiles are collected for CSV export by default. Columns are name, headline, category, location, LinkedIn URL, contact status, current role, and current company. Each field is normalized to one line; category no longer contains adjacent location or other card text.
+- Matching profiles are collected for CSV export by default. Columns are name, headline, location, LinkedIn URL, contact status, and current company. Each field is normalized to one line. Contact status is associated with its result card by position, including layouts where LinkedIn renders the action outside the card wrapper. Company is read from the current position or an explicit company reference in the headline.
 - The **No conectar, solo extraer** mode does not send connection invitations and counts extracted profiles toward the configured limit.
 - View and copy the activity log from the popup.
 - Stops when LinkedIn displays its weekly connection invitation limit.
@@ -74,7 +74,7 @@ También puedes usar la extensión en las sugerencias de **My Network → Grow**
 - Busca en el titular, cargo y puesto actual de cada ficha.
 - Pulsa únicamente **Connect**. Registra y omite perfiles con estado **Pending**, **Follow** o **Message**.
 - Si LinkedIn pregunta si quieres agregar una nota, pulsa **Send without a note** y continúa.
-- Exporta nombre, titular, categoría, ubicación, enlace de LinkedIn, estado de contacto, cargo actual y empresa actual al CSV. Cada campo se normaliza a una sola línea; Categoría no incluye ubicaciones ni texto de otras partes de la ficha.
+- Exporta nombre, titular, ubicación, enlace de LinkedIn, estado de contacto y empresa actual al CSV. Cada campo se normaliza a una sola línea. El estado se asocia con su ficha por posición, incluso si LinkedIn dibuja la acción fuera del contenedor de la ficha. La empresa se obtiene del puesto actual o de una referencia explícita en el titular.
 - Muestra un registro de actividad que puedes copiar desde la interfaz.
 - Se detiene si LinkedIn muestra el límite semanal de invitaciones.
 

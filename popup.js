@@ -212,23 +212,29 @@ function startAutomation(maxActions, keywords, extractOnly) {
   };
   const getActionStatus = (card, allCards) => {
     const statuses = new Set(["Connect", "Pending", "Follow", "Message"]);
-    const labelText = (el) => (el.innerText || "").trim() || (el.textContent || "").trim();
-    const localPending = [...card.querySelectorAll("button, a, [role='button'], span, div")]
-      .find((el) => statuses.has(labelText(el)) && visible(el));
-    if (localPending) return labelText(localPending);
-    const globalStatuses = [...document.querySelectorAll(
-      '[id^="SearchResultsA"] > div.mxtayq.mxtl5q > div.mxta2a.mxtht3 > div.mxtayq.mxtl5q > a.mxtlxl.mxtlxk > span.mxtlzr.mxtlyb, ' +
-      '[id^="SearchResultsA"] a.mxtlxl.mxtlxk > span.mxtlzr.mxtlyb'
-    )].filter((el) => statuses.has(labelText(el)) && visible(el));
-    for (const label of globalStatuses) {
-      const rect = label.getBoundingClientRect(), midY = rect.top + rect.height / 2;
+    const normalizedStatus = (el) => {
+      const values = [el.innerText, el.textContent, el.getAttribute("aria-label"), el.getAttribute("title")]
+        .map((value) => (value || "").replace(/\s+/g, " ").trim());
+      return values.find((value) => statuses.has(value)) || "";
+    };
+    // In some LinkedIn layouts the action lives outside the result-card wrapper.
+    // Search all rendered action labels, then associate each with the nearest
+    // result card by screen geometry instead of relying on obfuscated class names.
+    const labels = [...document.querySelectorAll("button, a, [role='button'], [aria-label], [title], span, div")]
+      .filter((el) => normalizedStatus(el) && visible(el));
+    const checked = new Set();
+    for (const label of labels) {
+      const action = label.closest("button, a, [role='button']") || label;
+      if (checked.has(action)) continue;
+      checked.add(action);
+      const rect = action.getBoundingClientRect(), midY = rect.top + rect.height / 2;
       let nearest = null, nearestDistance = Infinity;
       for (const candidate of allCards) {
         const cardRect = candidate.getBoundingClientRect();
         const distance = midY < cardRect.top ? cardRect.top - midY : midY > cardRect.bottom ? midY - cardRect.bottom : 0;
         if (distance < nearestDistance) { nearest = candidate; nearestDistance = distance; }
       }
-      if (nearest === card && nearestDistance <= Math.max(70, card.getBoundingClientRect().height * 0.35)) return labelText(label);
+      if (nearest === card && nearestDistance <= Math.max(100, rect.height * 4)) return normalizedStatus(label);
     }
     return false;
   };
@@ -240,26 +246,21 @@ function startAutomation(maxActions, keywords, extractOnly) {
     const lines = text.split("\n").map(singleLine).filter(Boolean);
     const locationPattern = /(?:,\s*)?(?:united states|argentina|canada|united kingdom|mexico|brazil|spain|chile|colombia|peru|uruguay|paraguay|bolivia|ecuador|france|germany|italy|portugal|netherlands|ireland|australia|new zealand|singapore|japan|china|israel|sweden|norway|denmark|switzerland|poland|romania|ukraine|kazakhstan|remote)\s*$/i;
     const isLocation = (line) => locationPattern.test(line) || /^(?:greater\s+)?(?:buenos aires|mendoza|cordoba|córdoba)(?:,|$)/i.test(line);
-    const roleSelectorLines = [...card.querySelectorAll(roleTextSelector)]
-      .flatMap((el) => (el.innerText || el.textContent || "").split("\n"))
-      .map((line) => singleLine(line).replace(/^Current\s*:\s*/i, ""))
-      .filter((line) => line && !isLocation(line) && !/^(?:connect|pending|follow|message)$/i.test(line));
-    const category = roleSelectorLines[0] || singleLine(getCurrentText(card).replace(/^Current\s*:\s*/i, "")) || "";
     const locationLine = lines.find(isLocation) || "";
     const current = singleLine(getCurrentText(card).replace(/^Current\s*:\s*/i, ""));
-    const atIndex = current.toLocaleLowerCase().lastIndexOf(" at ");
-    const currentRole = singleLine(atIndex >= 0 ? current.slice(0, atIndex) : current);
-    const currentCompany = singleLine(atIndex >= 0 ? current.slice(atIndex + 4).split(/\s+-\s+/)[0] : "");
-    const roleSelectorText = roleSelectorLines[0] || "";
+    const headline = singleLine(getHeadlineText(card));
+    const companySource = current || headline;
+    const atMatch = companySource.match(/\s+at\s+([^|•·;]+?)(?:\s+-\s+|\s+[—–-]\s+|$)/i);
+    const atCompany = atMatch?.[1] || "";
+    const mentionMatch = !atCompany && companySource.match(/@\s*([^|•·;]+?)(?:\s+[|•·]\s+|\s+[—–-]\s+|$)/);
+    const currentCompany = singleLine(atCompany || mentionMatch?.[1] || "");
     const contactStatus = getActionStatus(card, allCards) || "No detectado";
     state.rows.push({
       name: singleLine(name),
-      headline: singleLine(getHeadlineText(card) || roleSelectorText),
-      category,
+      headline,
       location: locationLine,
       link: href,
       estado_contacto: contactStatus,
-      cargo_actual: currentRole || roleSelectorText,
       empresa_actual: currentCompany
     });
     log(`CSV · perfil agregado: ${name || href} · estado=${contactStatus}`);
@@ -447,8 +448,8 @@ els.downloadCsv.addEventListener("click", async () => {
     if (!rows.length) return;
     const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
     const csv = [
-      ["Nombre", "Titular", "Categoría", "Ubicación", "Link LinkedIn", "estado_contacto", "cargo_actual", "empresa_actual"],
-      ...rows.map((r) => [r.name, r.headline, r.category, r.location, r.link, r.estado_contacto, r.cargo_actual, r.empresa_actual])
+      ["Nombre", "Titular", "Ubicación", "Link LinkedIn", "estado_contacto", "empresa_actual"],
+      ...rows.map((r) => [r.name, r.headline, r.location, r.link, r.estado_contacto, r.empresa_actual])
     ].map((r) => r.map(esc).join(",")).join("\r\n");
     const url = URL.createObjectURL(new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" }));
     const a = document.createElement("a"); a.href = url; a.download = "perfiles-linkedin.csv"; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
