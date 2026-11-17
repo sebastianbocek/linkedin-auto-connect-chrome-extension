@@ -1,15 +1,16 @@
 {
   "manifest_version": 3,
-  "name": "LinkedIn CEO & Founder Auto-Follow",
-  "short_name": "CEO Auto-Follow",
-  "version": "2.0.0",
-  "description": "Busca sugerencias de CEO y Founder en LinkedIn y pulsa Follow o Connect hasta el límite configurado.",
+  "name": "LinkedIn auto-connect chrome extension",
+  "short_name": "LinkedIn Auto-Connect",
+  "version": "2.1.0",
+  "description": "Filtra perfiles de LinkedIn con keywords configurables, conecta hasta el límite y exporta perfiles seleccionados a CSV.",
   "permissions": [
     "activeTab",
-    "scripting"
+    "scripting",
+    "storage"
   ],
   "action": {
-    "default_title": "Revisar perfiles de LinkedIn",
+    "default_title": "LinkedIn Auto-Connect",
     "default_popup": "popup.html"
   }
 }
