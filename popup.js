@@ -1,9 +1,9 @@
 const els = {
   page: document.getElementById("page"), status: document.getElementById("status"),
-  total: document.getElementById("total"),
+  total: document.getElementById("total"), progressLabel: document.getElementById("progressLabel"), limitLabel: document.getElementById("limitLabel"),
   limit: document.getElementById("limit"), start: document.getElementById("start"), stop: document.getElementById("stop"),
   keywords: document.getElementById("keywords"), addKeyword: document.getElementById("addKeyword"),
-  extractCsv: document.getElementById("extractCsv"), downloadCsv: document.getElementById("downloadCsv"),
+  extractOnly: document.getElementById("extractOnly"), downloadCsv: document.getElementById("downloadCsv"),
   logOutput: document.getElementById("logOutput"), copyLog: document.getElementById("copyLog")
 };
 const setStatus = (message) => { els.status.textContent = message; };
@@ -18,7 +18,7 @@ function addKeywordRow(value = "") {
 function saveSettings() {
   chrome.storage.local.set({ ceoAutoSettings: {
     keywords: [...els.keywords.querySelectorAll("input")].map((i) => i.value.trim()).filter(Boolean),
-    extractCsv: els.extractCsv.checked, limit: els.limit.value
+    extractOnly: els.extractOnly.checked, limit: els.limit.value
   } });
 }
 chrome.storage.local.get("ceoAutoSettings", ({ ceoAutoSettings: s = {} }) => {
@@ -26,11 +26,16 @@ chrome.storage.local.get("ceoAutoSettings", ({ ceoAutoSettings: s = {} }) => {
     s.keywords[0].toLowerCase() === "ceo" && s.keywords[1].toLowerCase() === "founder";
   if (legacyDefaults) { s.keywords = []; chrome.storage.local.set({ ceoAutoSettings: s }); }
   (s.keywords?.length ? s.keywords : [""]).forEach(addKeywordRow);
-  els.extractCsv.checked = !!s.extractCsv;
+  els.extractOnly.checked = !!s.extractOnly;
+  updateProgressLabel();
   if (s.limit !== undefined) els.limit.value = s.limit;
 });
 els.addKeyword.addEventListener("click", () => { addKeywordRow(); els.keywords.lastElementChild.querySelector("input").focus(); saveSettings(); });
-els.extractCsv.addEventListener("change", saveSettings); els.limit.addEventListener("change", saveSettings);
+function updateProgressLabel() {
+  els.progressLabel.textContent = els.extractOnly.checked ? "Perfiles extraídos" : "Conexiones";
+  els.limitLabel.textContent = els.extractOnly.checked ? "Máximo de perfiles (0 = ilimitado)" : "Máximo de conexiones (0 = ilimitado)";
+}
+els.extractOnly.addEventListener("change", () => { saveSettings(); updateProgressLabel(); }); els.limit.addEventListener("change", saveSettings);
 
 async function checkPage() {
   try {
@@ -46,12 +51,12 @@ async function runOnPage(func, args = []) {
   const results = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func, args }); return results?.[0]?.result;
 }
 
-function startAutomation(maxActions, keywords, extractCsv) {
+function startAutomation(maxActions, keywords, extractOnly) {
   if (window.__ceoAutoFollow?.running) return { started: false };
   const state = { running: true, stopped: false, count: 0, max: maxActions, rows: [], logs: [], message: "Preparando resultados…" };
   window.__ceoAutoFollow = state;
   const log = (message) => { state.logs.push(`${new Date().toLocaleTimeString()} ${message}`); if (state.logs.length > 250) state.logs.splice(0, state.logs.length - 250); };
-  log(`Inicio · página ${location.href} · keywords: ${keywords.join(", ")} · CSV: ${extractCsv ? "sí" : "no"}`);
+  log(`Inicio · página ${location.href} · keywords: ${keywords.join(", ")} · CSV: sí · modo=${extractOnly ? "solo extraer" : "conectar y extraer"}`);
   const normalized = keywords.map((k) => k.toLocaleLowerCase()).filter(Boolean);
   const clicked = new WeakSet(); const seenProfiles = new Set(); const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const visible = (el) => { const r = el.getBoundingClientRect(), s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.visibility !== "hidden" && s.display !== "none"; };
@@ -219,7 +224,7 @@ function startAutomation(maxActions, keywords, extractCsv) {
     return false;
   };
   const extractRow = (card, text, href) => {
-    if (!extractCsv || !href || state.rows.some((r) => r.link === href)) return;
+    if (!href || state.rows.some((r) => r.link === href)) return;
     const anchors = [...card.querySelectorAll("a[href*='/in/']")];
     const name = (anchors.find((a) => a.href.split("?")[0] === href)?.innerText || "").trim().split("\n")[0];
     const lines = text.split("\n").map((x) => x.trim()).filter(Boolean);
@@ -279,7 +284,8 @@ function startAutomation(maxActions, keywords, extractCsv) {
       if (showAll) { showAll.click(); await sleep(1200); log("Expandido Show all antes de recorrer tarjetas."); }
       let idle = 0, bottomRounds = 0;
       const noConnectLogged = new Set();
-      while (!state.stopped && (state.max === 0 || state.count < state.max)) {
+      const limitReached = () => state.max > 0 && (extractOnly ? state.rows.length >= state.max : state.count >= state.max);
+      while (!state.stopped && !limitReached()) {
         if (checkLimits()) break;
         const exactContactCards = [...document.querySelectorAll(contactCardSelector)];
         const cards = isSearch && exactContactCards.length
@@ -291,7 +297,7 @@ function startAutomation(maxActions, keywords, extractCsv) {
         log(`Escaneo · ${cards.length} contenedores de ficha detectados; inspeccionando coincidencias visibles.`);
         let didAction = false;
         for (const card of cards) {
-          if (state.stopped || (state.max && state.count >= state.max)) break;
+          if (state.stopped || limitReached()) break;
           const text = getCardText(card), keywordText = getKeywordText(card), normalizedText = keywordText.toLocaleLowerCase();
           if (!keywordText.trim()) continue;
           const matchedKeyword = normalized.find((word) => normalizedText.includes(word.toLocaleLowerCase()));
@@ -299,6 +305,14 @@ function startAutomation(maxActions, keywords, extractCsv) {
           const href = profileHref(card);
           log(`Coincidencia · keyword="${matchedKeyword}" · titular/cargo/Current="${keywordText.replace(/\s+/g, " ").slice(0, 180)}" · perfil=${href || "sin enlace"}`);
           if (href && !state.rows.some((r) => r.link === href)) extractRow(card, text, href);
+          if (extractOnly) {
+            if (href && state.rows.some((r) => r.link === href)) {
+              state.message = `Perfil extraído · ${state.rows.length}${state.max ? ` de ${state.max}` : ""}`;
+              log(`Solo extracción · perfil agregado al CSV · total=${state.rows.length}${state.max ? `/${state.max}` : ""}.`);
+            } else log("Solo extracción · ficha coincidente sin enlace de perfil; no se pudo agregar al CSV.");
+            if (limitReached()) break;
+            continue;
+          }
           if (href && seenProfiles.has(href)) continue;
           const control = getActionControl(card, cards.indexOf(card), cards);
           if (!control) {
@@ -347,8 +361,12 @@ function startAutomation(maxActions, keywords, extractCsv) {
         }
         if (idle >= 8 && !isSearch && scroll.atBottom) { state.message = "No hay más acciones visibles por ahora."; log(state.message); idle = 0; await sleep(2200); }
       }
-      if (!state.stopped && (state.max === 0 || state.count < state.max) && !/No se encontró/.test(state.message)) state.message = `Límite alcanzado: ${state.count} acciones.`;
-      else if (state.max && state.count >= state.max) state.message = `Límite alcanzado: ${state.count} acciones.`;
+      if (!state.stopped && limitReached()) state.message = extractOnly
+        ? `Límite alcanzado: ${state.rows.length} perfiles extraídos.`
+        : `Límite alcanzado: ${state.count} conexiones.`;
+      else if (!state.stopped && !/No se encontró/.test(state.message)) state.message = extractOnly
+        ? `Extracción finalizada: ${state.rows.length} perfiles.`
+        : `Conexiones finalizadas: ${state.count}.`;
     } catch (e) { state.message = `Se detuvo por un error: ${e?.message || "desconocido"}`; log(`ERROR · ${e?.stack || e?.message || String(e)}`); }
     finally { state.running = false; log(`Fin · ${state.message} · acciones=${state.count} · CSV=${state.rows.length}`); }
   })();
@@ -358,7 +376,7 @@ function stopAutomation() { const s = window.__ceoAutoFollow; if (!s) return { r
 function getAutomationStatus() { const s = window.__ceoAutoFollow; return s ? { running: s.running, count: s.count, rows: s.rows, logs: s.logs, message: s.message } : null; }
 async function refreshStatus() {
   try { const s = await runOnPage(getAutomationStatus); if (!s) return;
-    els.total.textContent = s.count;
+    els.total.textContent = els.extractOnly.checked ? (s.rows?.length || 0) : s.count;
     els.downloadCsv.textContent = `Descargar CSV (${s.rows?.length || 0})`; els.downloadCsv.disabled = !(s.rows?.length);
     const logText = (s.logs || []).join("\n");
     if (els.logOutput.value !== logText) { const wasAtBottom = els.logOutput.scrollTop + els.logOutput.clientHeight >= els.logOutput.scrollHeight - 8; els.logOutput.value = logText; if (wasAtBottom) els.logOutput.scrollTop = els.logOutput.scrollHeight; }
@@ -370,7 +388,7 @@ els.start.addEventListener("click", async () => {
   const keywords = [...els.keywords.querySelectorAll("input")].map((i) => i.value.trim()).filter(Boolean);
   if (!keywords.length) { setStatus("Agrega al menos una keyword para iniciar."); return; }
   saveSettings(); els.start.disabled = true; setStatus("Iniciando la búsqueda…");
-  try { const result = await runOnPage(startAutomation, [max, keywords, els.extractCsv.checked]);
+  try { const result = await runOnPage(startAutomation, [max, keywords, els.extractOnly.checked]);
     setStatus(result?.started ? "Automatización iniciada." : "La automatización ya está en marcha."); els.stop.disabled = false;
   } catch { setStatus("No se pudo iniciar. Abre LinkedIn y vuelve a intentarlo."); els.start.disabled = false; }
 });

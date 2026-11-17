@@ -1,6 +1,6 @@
 # LinkedIn Auto-Connect Chrome Extension
 
-A Chrome extension for reviewing LinkedIn people-search results and My Network suggestions. Configure the profile keywords in the popup, set an action limit, and let the extension process matching profiles.
+A Chrome extension for reviewing LinkedIn people-search results and My Network suggestions. Configure profile keywords and a connection or extraction limit in the popup.
 
 > Independent community project. Not affiliated with, endorsed by, or sponsored by LinkedIn.
 
@@ -24,14 +24,15 @@ A Chrome extension for reviewing LinkedIn people-search results and My Network s
 - Clicks **Connect** only. Profiles marked **Pending**, **Follow**, or **Message** are logged and skipped.
 - If LinkedIn asks whether to add a note, selects **Send without a note** and continues.
 - Scrolls through people-search results and advances to the next page when the current results are exhausted.
-- Set a maximum number of connection actions; enter `0` for unlimited processing.
-- Optionally collect matching profile names, categories, locations, and LinkedIn links into a downloadable CSV.
+- Matching profile names, categories, locations, and LinkedIn links are collected for CSV export by default.
+- Enable **No conectar, solo extraer** to collect profiles without sending connection invitations. The configured limit then counts extracted profiles.
+- Set a maximum number of connections or extracted profiles; enter `0` for unlimited processing.
 - View and copy the activity log from the popup.
 - Stops when LinkedIn displays its weekly connection invitation limit.
 
 ## Privacy and permissions
 
-The extension uses `activeTab` and `scripting` to interact with the LinkedIn tab after you start it, and `storage` to remember your popup settings. CSV data is collected from visible LinkedIn result cards and downloaded locally when you request it; the extension does not upload it to a server.
+The extension uses `activeTab` and `scripting` to interact with the LinkedIn tab after you start it, and `storage` to remember your popup settings. Matching profile data is collected from LinkedIn result cards and downloaded locally when you request the CSV; the extension does not upload it to a server.
 
 ## Important
 
@@ -46,8 +47,9 @@ Extensión de Chrome para revisar resultados de búsqueda de personas y sugerenc
 - Pulsa únicamente **Connect**. Registra y omite perfiles con estado **Pending**, **Follow** o **Message**.
 - Si LinkedIn pregunta si quieres agregar una nota, pulsa **Send without a note** y continúa.
 - Desplaza los resultados y avanza a la página siguiente al terminar la actual.
-- Define un máximo de conexiones; `0` significa ilimitado.
-- Si marcas la casilla de CSV, permite descargar nombre, categoría, ubicación y enlace de los perfiles coincidentes.
+- Recopila nombre, categoría, ubicación y enlace de perfiles coincidentes para exportarlos a CSV.
+- Activa **No conectar, solo extraer** para no enviar invitaciones. En ese modo, el límite cuenta perfiles extraídos.
+- Define un máximo de conexiones o perfiles extraídos; `0` significa ilimitado.
 - Muestra un registro de actividad que puedes copiar desde la interfaz.
 - Se detiene si LinkedIn muestra el límite semanal de invitaciones.
 
