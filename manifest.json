@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "LinkedIn auto-connect chrome extension",
   "short_name": "LinkedIn Auto-Connect",
-  "version": "2.2.1",
+  "version": "2.2.2",
   "description": "Filtra perfiles de LinkedIn con keywords configurables, conecta o extrae perfiles a CSV hasta el límite.",
   "permissions": [
     "activeTab",

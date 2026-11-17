@@ -125,22 +125,31 @@ function startAutomation(maxActions, keywords, extractOnly) {
       .filter((t) => /^Current\s*:/i.test(t) && t.length < 500);
     return [...new Set([...roleTexts, ...currentTexts, card.innerText || ""])].join("\n");
   };
-  const getKeywordText = (card) => {
-    const roleTexts = [...card.querySelectorAll(roleTextSelector)].map((el) => (el.innerText || el.textContent || "").trim()).filter(Boolean);
-    const currentTexts = [...card.querySelectorAll("p, span, div")].map((el) => (el.innerText || "").trim())
-      .filter((t) => /^Current\s*:/i.test(t) && t.length < 500);
+  const getCurrentText = (card) => [...new Set([...card.querySelectorAll("p, span, div")]
+    .map((el) => (el.innerText || "").trim())
+    .filter((text) => /^Current\s*:/i.test(text) && text.length < 500))]
+    .sort((a, b) => a.length - b.length)[0] || "";
+  const getHeadlineText = (card) => {
     const lines = (card.innerText || "").split("\n").map((line) => line.trim()).filter(Boolean);
     const profileName = (card.querySelector("a[href*='/in/']")?.innerText || "").trim().split("\n")[0];
     const nameIndex = profileName ? lines.findIndex((line) => line.toLocaleLowerCase().startsWith(profileName.toLocaleLowerCase())) : 0;
     const countryLine = /\b(argentina|india|spain|united states|united kingdom|canada|mexico|brazil|chile|colombia|peru|uruguay|paraguay|bolivia|ecuador|france|germany|italy|portugal|netherlands|ireland|australia|new zealand|singapore|japan|china|israel|sweden|norway|denmark|switzerland|poland|romania|ukraine|kazakhstan)\s*$/i;
     const headline = [];
     for (let i = Math.max(0, nameIndex + 1); i < lines.length && headline.length < 4; i++) {
-      const line = lines[i];
-      if (/^(current|past|people also viewed|mutual connections?)\s*:/i.test(line)) break;
+      let line = lines[i];
+      if (/^(current|past|people also viewed|mutual connections?|connect summary)\s*:/i.test(line)) break;
+      line = line.split(/\s+Connect\s+Summary\s*:/i)[0].split(/\s+(?:Connect|Follow|Message)\s+Current\s*:/i)[0].trim();
+      const degreeMarker = line.match(/•\s*(?:1st|2nd|3rd)\s+/i);
+      if (degreeMarker) line = line.slice(degreeMarker.index + degreeMarker[0].length).trim();
+      if (!line) continue;
       if (countryLine.test(line) || /^greater\s+(buenos aires|mendoza)\b/i.test(line)) break;
       headline.push(line);
     }
-    return [...new Set([...roleTexts, ...headline, ...currentTexts])].join("\n");
+    return headline.join("\n");
+  };
+  const getKeywordText = (card) => {
+    const roleTexts = [...card.querySelectorAll(roleTextSelector)].map((el) => (el.innerText || el.textContent || "").trim()).filter(Boolean);
+    return [...new Set([...roleTexts, getHeadlineText(card), getCurrentText(card)].filter(Boolean))].join("\n");
   };
   const getActionControl = (card, cardIndex, allCards) => {
     // Match Playwright getByText('Connect', { exact: true }) within this one
@@ -202,7 +211,7 @@ function startAutomation(maxActions, keywords, extractOnly) {
     return null;
   };
   const getActionStatus = (card, allCards) => {
-    const statuses = new Set(["Pending", "Follow", "Message"]);
+    const statuses = new Set(["Connect", "Pending", "Follow", "Message"]);
     const labelText = (el) => (el.innerText || "").trim() || (el.textContent || "").trim();
     const localPending = [...card.querySelectorAll("button, a, [role='button'], span, div")]
       .find((el) => statuses.has(labelText(el)) && visible(el));
@@ -223,14 +232,37 @@ function startAutomation(maxActions, keywords, extractOnly) {
     }
     return false;
   };
-  const extractRow = (card, text, href) => {
+  const extractRow = (card, text, href, allCards) => {
     if (!href || state.rows.some((r) => r.link === href)) return;
     const anchors = [...card.querySelectorAll("a[href*='/in/']")];
     const name = (anchors.find((a) => a.href.split("?")[0] === href)?.innerText || "").trim().split("\n")[0];
-    const lines = text.split("\n").map((x) => x.trim()).filter(Boolean);
-    const category = card.querySelector(roleTextSelector)?.innerText?.trim() || lines.find((x) => /^Current\s*:/i.test(x)) || lines.find((x) => /\b(ceo|founder|owner|director|president|manager|partner|chief|engineer|consultant|investor|co-founder)\b/i.test(x)) || "";
-    const locationLine = lines.find((x) => /,\s*(united states|argentina|canada|united kingdom|mexico|brazil|spain|chile|colombia|remote)\b/i.test(x)) || "";
-    state.rows.push({ name, category, location: locationLine, link: href }); log(`CSV · perfil agregado: ${name || href}`);
+    const singleLine = (value) => String(value || "").replace(/[\r\n\t]+/g, " ").replace(/\s{2,}/g, " ").trim();
+    const lines = text.split("\n").map(singleLine).filter(Boolean);
+    const locationPattern = /(?:,\s*)?(?:united states|argentina|canada|united kingdom|mexico|brazil|spain|chile|colombia|peru|uruguay|paraguay|bolivia|ecuador|france|germany|italy|portugal|netherlands|ireland|australia|new zealand|singapore|japan|china|israel|sweden|norway|denmark|switzerland|poland|romania|ukraine|kazakhstan|remote)\s*$/i;
+    const isLocation = (line) => locationPattern.test(line) || /^(?:greater\s+)?(?:buenos aires|mendoza|cordoba|córdoba)(?:,|$)/i.test(line);
+    const roleSelectorLines = [...card.querySelectorAll(roleTextSelector)]
+      .flatMap((el) => (el.innerText || el.textContent || "").split("\n"))
+      .map((line) => singleLine(line).replace(/^Current\s*:\s*/i, ""))
+      .filter((line) => line && !isLocation(line) && !/^(?:connect|pending|follow|message)$/i.test(line));
+    const category = roleSelectorLines[0] || singleLine(getCurrentText(card).replace(/^Current\s*:\s*/i, "")) || "";
+    const locationLine = lines.find(isLocation) || "";
+    const current = singleLine(getCurrentText(card).replace(/^Current\s*:\s*/i, ""));
+    const atIndex = current.toLocaleLowerCase().lastIndexOf(" at ");
+    const currentRole = singleLine(atIndex >= 0 ? current.slice(0, atIndex) : current);
+    const currentCompany = singleLine(atIndex >= 0 ? current.slice(atIndex + 4).split(/\s+-\s+/)[0] : "");
+    const roleSelectorText = roleSelectorLines[0] || "";
+    const contactStatus = getActionStatus(card, allCards) || "No detectado";
+    state.rows.push({
+      name: singleLine(name),
+      headline: singleLine(getHeadlineText(card) || roleSelectorText),
+      category,
+      location: locationLine,
+      link: href,
+      estado_contacto: contactStatus,
+      cargo_actual: currentRole || roleSelectorText,
+      empresa_actual: currentCompany
+    });
+    log(`CSV · perfil agregado: ${name || href} · estado=${contactStatus}`);
   };
   const paginate = async () => {
     const next = [...document.querySelectorAll("button, a, [role='button']")].find((el) => visible(el) && !el.disabled && (/^next\b/i.test((el.getAttribute("aria-label") || "").trim()) || /^next\b/i.test((el.innerText || "").trim())));
@@ -304,7 +336,7 @@ function startAutomation(maxActions, keywords, extractOnly) {
           if (!matchedKeyword) continue;
           const href = profileHref(card);
           log(`Coincidencia · keyword="${matchedKeyword}" · titular/cargo/Current="${keywordText.replace(/\s+/g, " ").slice(0, 180)}" · perfil=${href || "sin enlace"}`);
-          if (href && !state.rows.some((r) => r.link === href)) extractRow(card, text, href);
+          if (href && !state.rows.some((r) => r.link === href)) extractRow(card, text, href, cards);
           if (extractOnly) {
             if (href && state.rows.some((r) => r.link === href)) {
               state.message = `Perfil extraído · ${state.rows.length}${state.max ? ` de ${state.max}` : ""}`;
@@ -323,6 +355,7 @@ function startAutomation(maxActions, keywords, extractOnly) {
               if (actionStatus === "Pending") log(`Sin acción · estado Pending detectado para ${href || "perfil sin enlace"}; la invitación ya está pendiente, se omite Connect.`);
               else if (actionStatus === "Follow") log(`Sin acción · estado Follow detectado para ${href || "perfil sin enlace"}; no se pulsa Follow porque solo se automatiza Connect.`);
               else if (actionStatus === "Message") log(`Sin acción · estado Message detectado para ${href || "perfil sin enlace"}; el perfil ya permite enviar mensaje y no se pulsa Connect.`);
+              else if (actionStatus === "Connect") log(`Sin acción · se detectó Connect para ${href || "perfil sin enlace"}, pero no se pudo asociar el control a una ficha visible.`);
               else log(`Sin acción · coincidencia ${href || "sin enlace detectable"}; Connect detectados=${state.allConnectCount ?? "sin consulta"}, visibles=${state.visibleConnectCount ?? "sin consulta"}, fichas=${cards.length}; estados Pending/Follow/Message no detectados y Connect no asociado a esta ficha.`);
             }
             continue;
@@ -339,8 +372,17 @@ function startAutomation(maxActions, keywords, extractOnly) {
             log(`ERROR · la URL cambió tras Connect: ${searchUrlBeforeClick} → ${location.href}`); break;
           }
           log(`Connect · acción ${state.count}${state.max ? `/${state.max}` : ""} · URL de búsqueda sin cambios.`); didAction = true;
-          await sendWithoutNoteIfPrompted();
+          const invitationDialogHandled = await sendWithoutNoteIfPrompted();
           if (state.stopped) break;
+          if (href) {
+            const refreshedCard = [...document.querySelectorAll(contactCardSelector)].find((candidate) => profileHref(candidate) === href) || card;
+            const refreshedStatus = getActionStatus(refreshedCard, cards);
+            if (invitationDialogHandled || refreshedStatus === "Pending") {
+              const csvRow = state.rows.find((row) => row.link === href);
+              if (csvRow) csvRow.estado_contacto = "Pending";
+              log(`CSV · estado_contacto actualizado a Pending · perfil=${href}`);
+            }
+          }
           await sleep(1300); if (checkLimits()) break;
         }
         if (state.stopped) break;
@@ -404,7 +446,10 @@ els.downloadCsv.addEventListener("click", async () => {
     const s = await runOnPage(getAutomationStatus), rows = s?.rows || [];
     if (!rows.length) return;
     const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-    const csv = [ ["Nombre", "Categoría", "Ubicación", "Link LinkedIn"], ...rows.map((r) => [r.name, r.category, r.location, r.link]) ].map((r) => r.map(esc).join(",")).join("\r\n");
+    const csv = [
+      ["Nombre", "Titular", "Categoría", "Ubicación", "Link LinkedIn", "estado_contacto", "cargo_actual", "empresa_actual"],
+      ...rows.map((r) => [r.name, r.headline, r.category, r.location, r.link, r.estado_contacto, r.cargo_actual, r.empresa_actual])
+    ].map((r) => r.map(esc).join(",")).join("\r\n");
     const url = URL.createObjectURL(new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" }));
     const a = document.createElement("a"); a.href = url; a.download = "perfiles-linkedin.csv"; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
   } catch { setStatus("No se pudo preparar el CSV."); }
