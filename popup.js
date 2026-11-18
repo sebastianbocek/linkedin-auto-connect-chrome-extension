@@ -160,6 +160,10 @@ async function scrapeContactInfoPanelInProfileTab() {
     const match = (value || "").match(/[^\s<>()[\]{}"'`,;]+@[^\s<>()[\]{}"'`,;]+/);
     return match?.[0]?.replace(/^[.,:;]+|[.,:;.!?]+$/g, "") || "";
   };
+  const normalizeEmail = (value) => {
+    const candidate = extractEmailByAt(value);
+    return candidate && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(candidate) ? candidate : "";
+  };
   const knownEmailSelectors = ["#envelope-outline-medium", ".aaaayy.aaaiu3.aaaj1t.aaaj06.aaaj1j.aaaiyn.aaaia7.aaal5q"];
   const emailScopes = knownEmailSelectors.flatMap((selector) => {
     let hits = []; try { hits = [...panel.querySelectorAll(selector)]; } catch { }
@@ -171,9 +175,11 @@ async function scrapeContactInfoPanelInProfileTab() {
   });
   const emailCandidates = [...new Set([...emailScopes, ...panel.querySelectorAll("a[href]")])];
   const emailAnchor = emailCandidates.find((a) => visible(a) && (/^mailto:/i.test(a.href) || (a.innerText || a.textContent || "").includes("@") || (a.getAttribute("aria-label") || "").includes("@")));
-  const email = (emailAnchor?.getAttribute("href") || "").replace(/^mailto:/i, "").split("?")[0]
-    || extractEmailByAt(emailAnchor?.innerText || emailAnchor?.textContent || emailAnchor?.getAttribute("aria-label"))
-    || extractEmailByAt(text);
+  const emailHref = /^mailto:/i.test(emailAnchor?.getAttribute("href") || "")
+    ? emailAnchor.getAttribute("href").replace(/^mailto:/i, "").split("?")[0]
+    : "";
+  const email = [emailHref, emailAnchor?.innerText, emailAnchor?.textContent, emailAnchor?.getAttribute("aria-label"), text]
+    .map(normalizeEmail).find(Boolean) || "";
   const cleanExternalUrl = (href) => {
     try {
       const url = new URL(href, location.href);
@@ -204,12 +210,20 @@ async function scrapeContactInfoPanelInProfileTab() {
       if (website) break;
     }
   }
-  if (!website) { websiteAnchor = [...panel.querySelectorAll("a[href]")].find((a) => cleanExternalUrl(a.href)) || null; website = websiteAnchor ? cleanExternalUrl(websiteAnchor.href) : ""; }
-  if (!website) {
-    const afterLabel = text.match(/Website\s*([\s\S]{0,300})/i)?.[1] || "";
-    website = afterLabel.match(/https?:\/\/[^\s)]+/i)?.[0] || afterLabel.match(/(?:www\.)?[A-Z0-9-]+(?:\.[A-Z0-9-]+)*\.[A-Z]{2,}(?:\/[^\s)]*)?/i)?.[0] || "";
-    if (website && !/^https?:/i.test(website)) website = `https://${website}`;
+  const allWebsiteAnchors = [...panel.querySelectorAll("a[href]")].filter((a) => visible(a) && cleanExternalUrl(a.href));
+  websiteAnchor ||= allWebsiteAnchors[0] || null;
+  const websites = new Set(allWebsiteAnchors.map((a) => cleanExternalUrl(a.href)).filter(Boolean));
+  if (!websites.size) {
+    const websiteSection = text.match(/Website\s*([\s\S]{0,500}?)(?=\b(?:Email|Phone|Birthday|Connected since)\b|$)/i)?.[1] || "";
+    const rawUrls = websiteSection.match(/(?:https?:\/\/|www\.)[^\s<>()]+|\b[A-Z0-9-]+(?:\.[A-Z0-9-]+)+\.[A-Z]{2,}(?:\/[^\s<>()]*)?/gi) || [];
+    for (let value of rawUrls) {
+      value = value.replace(/[.,;!?]+$/g, "");
+      if (!/^https?:\/\//i.test(value)) value = `https://${value}`;
+      const cleaned = cleanExternalUrl(value);
+      if (cleaned) websites.add(cleaned);
+    }
   }
+  website = [...websites].join("; ");
   return { ok: true, contactInfoOpened: true, email, website, selectors: { email: selectorFor(emailAnchor), website: selectorFor(websiteAnchor) } };
 }
 async function enrichOneProfile(sourceTabId, href) {
@@ -232,7 +246,8 @@ async function enrichOneProfile(sourceTabId, href) {
     const injected = await chrome.scripting.executeScript({ target: { tabId: sourceTabId }, func: (profileHref, data) => {
       const s = window.__ceoAutoFollow; if (!s) return null;
       const row = s.rows.find((item) => item.link === profileHref); if (!row) return null;
-      row.email_contacto = data.email || ""; row.website_contacto = data.website || "";
+      row.email_contacto = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(data.email || "") ? data.email : "";
+      row.website_contacto = data.website || "";
       row.enrichment_status = data.ok ? "complete" : "error";
       s.logs.push(`${new Date().toLocaleTimeString()} Enriquecimiento · ${data.ok ? `email=${data.email ? "sí" : "no"} · website=${data.website ? "sí" : "no"}` : data.error} · Contact info=${data.contactInfoOpened ? "abierto desde el perfil" : "no abierto"} · pestaña=${data.tabClosed ? "cerrada" : "no cerrada"} · ${profileHref}`);
       if (data.contactInfoSelector || (data.selectors && (data.selectors.email || data.selectors.website))) s.logs.push(`${new Date().toLocaleTimeString()} Autoaprendizaje · selectores Contact info · botón=${data.contactInfoSelector || "sin dato"} · email=${data.selectors?.email || "sin dato"} · website=${data.selectors?.website || "sin dato"}`);
