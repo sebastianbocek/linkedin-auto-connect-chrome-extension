@@ -10,13 +10,14 @@ header p.author { margin-top: 3px; font-size: 10px; }
 header p.author a { color: #0a66c2; text-decoration: none; }
 header p.author a:hover { text-decoration: underline; }
 .page { background: #e7f0eb; border: 1px solid #d4e6dc; border-radius: 9px; padding: 10px; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 12px; }
-.stats { display: grid; grid-template-columns: 1fr; gap: 8px; margin: 10px 0; }
+.stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 10px 0; }
 .stats > div { border-radius: 10px; background: white; box-shadow: 0 1px 4px #16322910; text-align: center; padding: 12px 6px; display: flex; flex-direction: column; gap: 3px; }
 .stats b { color: #0e7453; font-size: 24px; }
 .stats span { font-size: 10px; color: #64746e; }
 .status { font-size: 12px; line-height: 1.5; border: 1px solid #e5e9e6; background: #fff; border-radius: 9px; padding: 10px; min-height: 44px; color: #425b51; margin-bottom: 10px; }
 .limit { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 2px; color: #40574d; font-size: 12px; font-weight: 600; }
 .limit input { width: 86px; border: 1px solid #cedbd4; border-radius: 7px; padding: 8px; font: inherit; }
+.field-help { display: block; margin: -3px 2px 8px; color: #64746e; font-size: 10px; line-height: 1.4; }
 .keyword-config { margin-top: 4px; }
 .keyword-row { display: flex; gap: 6px; margin: 6px 0; }
 .keyword-row input { flex: 1; min-width: 0; border: 1px solid #cedbd4; border-radius: 7px; padding: 8px; font: inherit; font-size: 12px; }

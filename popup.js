@@ -1,7 +1,7 @@
 const els = {
   page: document.getElementById("page"), status: document.getElementById("status"),
-  total: document.getElementById("total"), progressLabel: document.getElementById("progressLabel"), limitLabel: document.getElementById("limitLabel"),
-  limit: document.getElementById("limit"), start: document.getElementById("start"), stop: document.getElementById("stop"),
+  total: document.getElementById("total"), emailCount: document.getElementById("emailCount"), websiteCount: document.getElementById("websiteCount"), progressLabel: document.getElementById("progressLabel"), limitLabel: document.getElementById("limitLabel"),
+  limit: document.getElementById("limit"), enrichmentConcurrency: document.getElementById("enrichmentConcurrency"), start: document.getElementById("start"), stop: document.getElementById("stop"),
   keywords: document.getElementById("keywords"), addKeyword: document.getElementById("addKeyword"),
   extractOnly: document.getElementById("extractOnly"), downloadCsv: document.getElementById("downloadCsv"),
   logOutput: document.getElementById("logOutput"), copyLog: document.getElementById("copyLog")
@@ -18,7 +18,7 @@ function addKeywordRow(value = "") {
 function saveSettings() {
   chrome.storage.local.set({ ceoAutoSettings: {
     keywords: [...els.keywords.querySelectorAll("input")].map((i) => i.value.trim()).filter(Boolean),
-    extractOnly: els.extractOnly.checked, limit: els.limit.value
+    extractOnly: els.extractOnly.checked, limit: els.limit.value, enrichmentConcurrency: els.enrichmentConcurrency.value
   } });
 }
 chrome.storage.local.get("ceoAutoSettings", ({ ceoAutoSettings: s = {} }) => {
@@ -29,6 +29,7 @@ chrome.storage.local.get("ceoAutoSettings", ({ ceoAutoSettings: s = {} }) => {
   els.extractOnly.checked = !!s.extractOnly;
   updateProgressLabel();
   if (s.limit !== undefined) els.limit.value = s.limit;
+  els.enrichmentConcurrency.value = s.enrichmentConcurrency ?? "5";
 });
 els.addKeyword.addEventListener("click", () => { addKeywordRow(); els.keywords.lastElementChild.querySelector("input").focus(); saveSettings(); });
 function updateProgressLabel() {
@@ -36,10 +37,15 @@ function updateProgressLabel() {
   els.limitLabel.textContent = els.extractOnly.checked ? "Máximo de perfiles (0 = ilimitado)" : "Máximo de conexiones (0 = ilimitado)";
 }
 els.extractOnly.addEventListener("change", () => { saveSettings(); updateProgressLabel(); }); els.limit.addEventListener("change", saveSettings);
+els.enrichmentConcurrency.addEventListener("change", () => {
+  const value = Math.min(20, Math.max(1, Number.parseInt(els.enrichmentConcurrency.value, 10) || 5));
+  els.enrichmentConcurrency.value = String(value); saveSettings();
+});
 
 async function checkPage() {
   try {
     const tab = await getActiveTab(); const url = new URL(tab?.url || "");
+    if (tab?.id) automationTabId = tab.id;
     const allowed = url.hostname === "www.linkedin.com" || url.hostname.endsWith(".linkedin.com");
     els.page.textContent = allowed ? (url.pathname.includes("/search/results/people") ? "LinkedIn · resultados de personas" : "LinkedIn · sugerencias") : "Abre linkedin.com para usar la automatización";
     els.start.disabled = !allowed; els.stop.disabled = !allowed;
@@ -47,16 +53,223 @@ async function checkPage() {
   } catch { els.page.textContent = "No se pudo detectar la pestaña"; els.start.disabled = true; els.stop.disabled = true; }
 }
 async function runOnPage(func, args = []) {
-  const tab = await getActiveTab(); if (!tab?.id) throw new Error("No se encontró la pestaña activa.");
+  const tab = automationTabId ? await chrome.tabs.get(automationTabId) : await getActiveTab(); if (!tab?.id) throw new Error("No se encontró la pestaña de búsqueda.");
   const results = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func, args }); return results?.[0]?.result;
 }
+let automationTabId = null;
+const enrichmentInFlight = new Set();
+const enrichmentTabs = new Set();
+function withTimeout(promise, timeoutMs, message) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(message)), timeoutMs); })
+  ]).finally(() => clearTimeout(timer));
+}
+async function waitForTabLoad(tabId) {
+  const started = Date.now();
+  while (Date.now() - started < 25000) {
+    await chrome.tabs.get(tabId);
+    try {
+      const result = await chrome.scripting.executeScript({ target: { tabId }, func: () => document.readyState });
+      if (["interactive", "complete"].includes(result?.[0]?.result)) { await new Promise((resolve) => setTimeout(resolve, 700)); return; }
+    } catch { }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+  throw new Error("Tiempo agotado cargando el perfil.");
+}
+function profilePageUrl(profileHref) {
+  const url = new URL(profileHref);
+  url.pathname = url.pathname.replace(/\/+$/, "").replace(/\/overlay\/contact-info$/i, "").replace(/\/en$/i, "") + "/";
+  url.search = ""; url.hash = "";
+  return url.href;
+}
+function isContactInfoUrl(value) {
+  try { return /\/in\/[^/]+\/overlay\/contact-info\/?$/i.test(new URL(value).pathname); }
+  catch { return false; }
+}
+async function clickContactInfoInProfileTab() {
+  const visible = (el) => { const r = el.getBoundingClientRect(), s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden"; };
+  const roots = [document];
+  for (let i = 0; i < roots.length; i++) for (const el of roots[i].querySelectorAll("*")) if (el.shadowRoot) roots.push(el.shadowRoot);
+  const control = roots.flatMap((root) => [...root.querySelectorAll("a,button,[role='link'],[role='button']")]).find((el) => {
+    const labels = [el.getAttribute("aria-label"), el.innerText, el.textContent].filter(Boolean).map((label) => label.replace(/\s+/g, " ").trim());
+    return visible(el) && labels.some((label) => /^(contact info|see contact info|contact information|información de contacto)$/i.test(label));
+  });
+  if (!control) return false;
+  control.click();
+  return true;
+}
+async function contactInfoPanelReadyInProfileTab() {
+  const visible = (el) => { const r = el.getBoundingClientRect(), s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden"; };
+  const roots = [document];
+  for (let i = 0; i < roots.length; i++) for (const el of roots[i].querySelectorAll("*")) if (el.shadowRoot) roots.push(el.shadowRoot);
+  const panels = roots.flatMap((root) => [...root.querySelectorAll('[role="dialog"], [aria-modal="true"], .artdeco-modal, .artdeco-modal__content')]);
+  const headings = roots.flatMap((root) => [...root.querySelectorAll('h1,h2,h3,[role="heading"],div,span')]);
+  return panels.some((el) => visible(el) && /contact info/i.test(el.innerText || el.textContent || ""))
+    || headings.some((el) => visible(el) && (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim().toLowerCase() === "contact info")
+    || /\/overlay\/contact-info\/?$/i.test(location.pathname);
+}
+async function scrapeContactInfoPanelInProfileTab() {
+  const visible = (el) => { const r = el.getBoundingClientRect(), s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden"; };
+  const roots = [document];
+  for (let i = 0; i < roots.length; i++) for (const el of roots[i].querySelectorAll("*")) if (el.shadowRoot) roots.push(el.shadowRoot);
+  const dialogs = roots.flatMap((root) => [...root.querySelectorAll('[role="dialog"], [aria-modal="true"], .artdeco-modal, .artdeco-modal__content')]);
+  let panel = dialogs.find((el) => visible(el) && /contact info/i.test(el.innerText || el.textContent || ""));
+  if (!panel) {
+    const heading = roots.flatMap((root) => [...root.querySelectorAll('h1,h2,h3,[role="heading"],div,span')])
+      .find((el) => visible(el) && (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim().toLowerCase() === "contact info");
+    let ancestor = heading;
+    for (let depth = 0; ancestor && depth < 12; depth++, ancestor = ancestor.parentElement || ancestor.getRootNode()?.host) {
+      const content = (ancestor.innerText || ancestor.textContent || "").replace(/\u00a0/g, " ");
+      if (/contact info/i.test(content) && /(email|website)/i.test(content)) { panel = ancestor; break; }
+    }
+  }
+  if (!panel && /\/overlay\/contact-info\/?$/i.test(location.pathname)) panel = document.body;
+  if (!panel || !visible(panel)) return { ok: false, contactInfoOpened: false, error: "No se encontró el contenido del panel Contact info." };
+  const text = (panel.innerText || panel.textContent || "").replace(/\u00a0/g, " ");
+  const extractEmailByAt = (value) => {
+    const match = (value || "").match(/[^\s<>()[\]{}"'`,;]+@[^\s<>()[\]{}"'`,;]+/);
+    return match?.[0]?.replace(/^[.,:;]+|[.,:;.!?]+$/g, "") || "";
+  };
+  const emailAnchor = [...panel.querySelectorAll("a[href]")].find((a) => visible(a) && (/^mailto:/i.test(a.href) || (a.innerText || a.textContent || "").includes("@") || (a.getAttribute("aria-label") || "").includes("@")));
+  const email = (emailAnchor?.getAttribute("href") || "").replace(/^mailto:/i, "").split("?")[0]
+    || extractEmailByAt(emailAnchor?.innerText || emailAnchor?.textContent || emailAnchor?.getAttribute("aria-label"))
+    || extractEmailByAt(text);
+  const cleanExternalUrl = (href) => {
+    try {
+      const url = new URL(href, location.href);
+      if (/linkedin\.com$/i.test(url.hostname) && /redir\/redirect/i.test(url.pathname)) {
+        const target = url.searchParams.get("url"); if (target) return target;
+      }
+      return /^https?:$/.test(url.protocol) && !/(^|\.)linkedin\.com$/i.test(url.hostname) ? url.href : "";
+    } catch { return ""; }
+  };
+  const labelElements = [...panel.querySelectorAll("a,button,[role='link'],[role='button'],span,div,p")].filter((el) => visible(el));
+  const websiteLabel = labelElements.find((el) => /^website$/i.test((el.innerText || el.textContent || "").replace(/\s+/g, " ").trim()));
+  let website = "";
+  let labelAncestor = websiteLabel;
+  for (let depth = 0; labelAncestor && depth < 7 && !website; depth++, labelAncestor = labelAncestor.parentElement) {
+    website = [...labelAncestor.querySelectorAll("a[href]")].map((a) => cleanExternalUrl(a.href)).find(Boolean) || "";
+  }
+  if (!website) website = [...panel.querySelectorAll("a[href]")].map((a) => cleanExternalUrl(a.href)).find(Boolean) || "";
+  if (!website) {
+    const afterLabel = text.match(/Website\s*([\s\S]{0,300})/i)?.[1] || "";
+    website = afterLabel.match(/https?:\/\/[^\s)]+/i)?.[0] || afterLabel.match(/(?:www\.)?[A-Z0-9-]+(?:\.[A-Z0-9-]+)*\.[A-Z]{2,}(?:\/[^\s)]*)?/i)?.[0] || "";
+    if (website && !/^https?:/i.test(website)) website = `https://${website}`;
+  }
+  return { ok: true, contactInfoOpened: true, email, website };
+}
+async function enrichOneProfile(sourceTabId, href) {
+  let profileTabId = null;
+  let profileTabClosed = false;
+  let contactInfoWasOpened = false;
+  const closeProfileTab = async () => {
+    if (profileTabId == null) return profileTabClosed;
+    const closingId = profileTabId;
+    try { await withTimeout(chrome.tabs.remove(closingId), 4000, "Tiempo agotado cerrando pestaña."); profileTabClosed = true; }
+    catch {
+      const stillExists = await withTimeout(chrome.tabs.get(closingId), 2500, "Tiempo agotado comprobando pestaña.").then(() => true, () => false);
+      if (!stillExists) profileTabClosed = true;
+      else { try { await withTimeout(chrome.tabs.remove(closingId), 4000, "Tiempo agotado reintentando cierre."); profileTabClosed = true; } catch { } }
+    }
+    if (profileTabClosed) { enrichmentTabs.delete(closingId); profileTabId = null; }
+    return profileTabClosed;
+  };
+  const writeResultToSearchTab = async (payload) => {
+    const injected = await chrome.scripting.executeScript({ target: { tabId: sourceTabId }, func: (profileHref, data) => {
+      const s = window.__ceoAutoFollow; if (!s) return null;
+      const row = s.rows.find((item) => item.link === profileHref); if (!row) return null;
+      row.email_contacto = data.email || ""; row.website_contacto = data.website || "";
+      row.enrichment_status = data.ok ? "complete" : "error";
+      s.logs.push(`${new Date().toLocaleTimeString()} Enriquecimiento · ${data.ok ? `email=${data.email ? "sí" : "no"} · website=${data.website ? "sí" : "no"}` : data.error} · Contact info=${data.contactInfoOpened ? "abierto desde el perfil" : "no abierto"} · pestaña=${data.tabClosed ? "cerrada" : "no cerrada"} · ${profileHref}`);
+      if (s.logs.length > 250) s.logs.splice(0, s.logs.length - 250);
+      return { emails: s.rows.filter((item) => !!item.email_contacto).length, websites: s.rows.filter((item) => !!item.website_contacto).length };
+    }, args: [href, { ...payload, tabClosed: profileTabClosed }] });
+    const counts = injected?.[0]?.result;
+    if (counts) { els.emailCount.textContent = counts.emails; els.websiteCount.textContent = counts.websites; }
+  };
+  try {
+    const created = await chrome.tabs.create({ url: profilePageUrl(href), active: false });
+    profileTabId = created.id; enrichmentTabs.add(profileTabId);
+    await waitForTabLoad(profileTabId);
+    let panelOpened = false, clickSucceeded = false, clickAttempts = 0, lastClickAt = 0;
+    for (let attempt = 0; attempt < 36 && !panelOpened; attempt++) {
+      const tab = await chrome.tabs.get(profileTabId).catch(() => null);
+      if (tab && isContactInfoUrl(tab.url)) {
+        await waitForTabLoad(profileTabId);
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        panelOpened = true;
+      } else {
+        const ready = await chrome.scripting.executeScript({ target: { tabId: profileTabId }, func: contactInfoPanelReadyInProfileTab }).catch(() => null);
+        panelOpened = !!ready?.[0]?.result;
+        if (!panelOpened && !clickSucceeded && clickAttempts < 3 && Date.now() - lastClickAt > 2500) {
+          lastClickAt = Date.now();
+          clickAttempts++;
+          const clicked = await chrome.scripting.executeScript({ target: { tabId: profileTabId }, func: clickContactInfoInProfileTab }).catch(() => null);
+          clickSucceeded = !!clicked?.[0]?.result;
+        }
+        if (!panelOpened) await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    }
+    if (!panelOpened) throw new Error("No se pudo abrir Contact info desde el perfil.");
+    contactInfoWasOpened = true;
+    let payload = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const result = await withTimeout(
+        chrome.scripting.executeScript({ target: { tabId: profileTabId }, func: scrapeContactInfoPanelInProfileTab }),
+        12000,
+        "Tiempo agotado leyendo los datos de Contact info."
+      ).catch(() => null);
+      payload = result?.[0]?.result || null;
+      if (payload?.ok) break;
+      await new Promise((resolve) => setTimeout(resolve, 700));
+    }
+    if (!payload) payload = { ok: false, contactInfoOpened: true, error: "Contact info abrió, pero no devolvió datos legibles." };
+    if (!await closeProfileTab()) throw new Error("No se pudo cerrar la pestaña de enriquecimiento.");
+    await writeResultToSearchTab(payload);
+  } catch (error) {
+    await closeProfileTab();
+    try { await writeResultToSearchTab({ ok: false, email: "", website: "", contactInfoOpened: contactInfoWasOpened, error: error?.message || "error desconocido" }); } catch { }
+  } finally {
+    try { await withTimeout(closeProfileTab(), 10000, "Tiempo agotado cerrando la pestaña enriquecida."); } catch { }
+    enrichmentInFlight.delete(href);
+  }
+}
+async function scheduleEnrichment(sourceTabId, rows) {
+  if (!sourceTabId) return;
+  const setting = Math.min(20, Math.max(1, Number.parseInt(els.enrichmentConcurrency.value, 10) || 5));
+  const capacity = setting - enrichmentInFlight.size;
+  if (capacity <= 0) return;
+  const candidates = rows.filter((row) => row.link && ["pending", "queued"].includes(row.enrichment_status) && !enrichmentInFlight.has(row.link)).slice(0, capacity);
+  if (!candidates.length) return;
+  const links = candidates.map((row) => row.link);
+  const claimResult = await chrome.scripting.executeScript({ target: { tabId: sourceTabId }, func: (candidateLinks) => {
+    const state = window.__ceoAutoFollow; if (!state) return [];
+    const claimed = [];
+    for (const link of candidateLinks) {
+      const row = state.rows.find((item) => item.link === link);
+      if (row && ["pending", "queued"].includes(row.enrichment_status)) { row.enrichment_status = "processing"; claimed.push(link); }
+    }
+    return claimed;
+  }, args: [links] }).catch(() => null);
+  const claimed = new Set(claimResult?.[0]?.result || []);
+  for (const row of candidates) {
+    if (!claimed.has(row.link)) continue;
+    enrichmentInFlight.add(row.link);
+    void enrichOneProfile(sourceTabId, row.link);
+  }
+}
+window.addEventListener("beforeunload", () => {
+  for (const tabId of enrichmentTabs) chrome.tabs.remove(tabId).catch(() => {});
+});
 
-function startAutomation(maxActions, keywords, extractOnly) {
+function startAutomation(maxActions, keywords, extractOnly, enrichmentConcurrency) {
   if (window.__ceoAutoFollow?.running) return { started: false };
-  const state = { running: true, stopped: false, count: 0, max: maxActions, rows: [], logs: [], message: "Preparando resultados…" };
+  const state = { running: true, stopped: false, count: 0, max: maxActions, enrichmentConcurrency, rows: [], logs: [], message: "Preparando resultados…" };
   window.__ceoAutoFollow = state;
   const log = (message) => { state.logs.push(`${new Date().toLocaleTimeString()} ${message}`); if (state.logs.length > 250) state.logs.splice(0, state.logs.length - 250); };
-  log(`Inicio · página ${location.href} · keywords: ${keywords.join(", ")} · CSV: sí · modo=${extractOnly ? "solo extraer" : "conectar y extraer"}`);
+  log(`Inicio · página ${location.href} · keywords: ${keywords.join(", ")} · CSV: sí · pestañas de enriquecimiento simultáneas=${enrichmentConcurrency} · modo=${extractOnly ? "solo extraer" : "conectar y extraer"}`);
   const normalized = keywords.map((k) => k.toLocaleLowerCase()).filter(Boolean);
   const clicked = new WeakSet(); const seenProfiles = new Set(); const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const visible = (el) => { const r = el.getBoundingClientRect(), s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.visibility !== "hidden" && s.display !== "none"; };
@@ -261,27 +474,98 @@ function startAutomation(maxActions, keywords, extractOnly) {
       location: locationLine,
       link: href,
       estado_contacto: contactStatus,
-      empresa_actual: currentCompany
+      empresa_actual: currentCompany,
+      email_contacto: "",
+      website_contacto: "",
+      enrichment_status: "queued"
     });
     log(`CSV · perfil agregado: ${name || href} · estado=${contactStatus}`);
   };
   const paginate = async () => {
-    const next = [...document.querySelectorAll("button, a, [role='button']")].find((el) => visible(el) && !el.disabled && (/^next\b/i.test((el.getAttribute("aria-label") || "").trim()) || /^next\b/i.test((el.innerText || "").trim())));
-    if (!next) return false;
+    const clickables = [...document.querySelectorAll("button, a, [role='button'], [tabindex='0']")]
+      .filter((el) => visible(el) && !el.disabled && el.getAttribute("aria-disabled") !== "true");
+    const currentIndicator = document.querySelector('[aria-current="page"], .artdeco-pagination__indicator--number.active, [class*="pagination"] [aria-current]');
+    const pageFromLabel = (el) => {
+      if (!el) return 0;
+      const label = `${el.getAttribute("aria-label") || ""} ${el.innerText || el.textContent || ""}`;
+      return Number(label.match(/(?:page\s*)?(\d+)/i)?.[1]) || 0;
+    };
+    const pageNow = pageFromLabel(currentIndicator) || Number(new URL(location.href).searchParams.get("page")) || 1;
+    const paginationRoots = [...document.querySelectorAll('nav, [class*="pagination"], [aria-label*="pagination" i], footer')];
+    let paginationRoot = null;
+    if (currentIndicator) {
+      let ancestor = currentIndicator;
+      for (let i = 0; ancestor && i < 8; i++, ancestor = ancestor.parentElement) {
+        const controls = [...ancestor.querySelectorAll("button,a,[role='button'],[tabindex='0']")];
+        if (controls.length >= 2 && controls.some((el) => /^\d+$/.test((el.innerText || el.textContent || "").trim()))) { paginationRoot = ancestor; break; }
+      }
+    }
+    if (!paginationRoot) paginationRoot = paginationRoots
+      .filter((root) => visible(root) && root.querySelectorAll("button,a,[role='button'],[tabindex='0']").length >= 2)
+      .sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0] || null;
+    const inPagination = (el) => paginationRoot ? paginationRoot.contains(el) : false;
+    const isNextLabel = (el) => {
+      const semantic = `${el.getAttribute("aria-label") || ""} ${el.getAttribute("title") || ""} ${el.getAttribute("data-test-pagination-page-btn") || ""}`.replace(/\s+/g, " ").trim();
+      const text = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
+      const classes = typeof el.className === "string" ? el.className : "";
+      return /^next(?:\s+page)?\s*[›>→]*$/i.test(semantic) || /^next(?:\s+page)?\s*[›>→]*$/i.test(text) || /pagination__button--next|chevron-right/i.test(classes);
+    };
+    let next = clickables.find((el) => isNextLabel(el) && (!paginationRoot || inPagination(el)));
+    if (!next && paginationRoot) next = [...paginationRoot.querySelectorAll("button,a,[role='button'],[tabindex='0']")]
+      .find((el) => visible(el) && !el.disabled && el.getAttribute("aria-disabled") !== "true" && (el.querySelector("svg[aria-label*='right' i], svg[class*='chevron-right']") || el.matches("button[class*='next'],a[class*='next']")));
+    if (!next && paginationRoot) {
+      next = [...paginationRoot.querySelectorAll("button,a,[role='button'],[tabindex='0']")].find((el) => visible(el) && !el.disabled && (el.innerText || el.textContent || "").trim() === String(pageNow + 1));
+    }
+    if (!next) {
+      next = clickables.filter((el) => {
+        const rect = el.getBoundingClientRect();
+        const label = (el.getAttribute("aria-label") || "").trim();
+        const text = (el.innerText || el.textContent || "").trim();
+        return (rect.top > window.innerHeight * 0.35 && text === String(pageNow + 1)) || new RegExp(`^page\\s*${pageNow + 1}$`, "i").test(label);
+      }).sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0] || null;
+    }
+    if (!next) {
+      const nextPageLink = clickables.map((el) => ({ el, page: (() => { try { return Number(new URL(el.href, location.href).searchParams.get("page")) || 0; } catch { return 0; } })() }))
+        .filter((item) => item.page > pageNow && (!paginationRoot || inPagination(item.el)))
+        .sort((a, b) => a.page - b.page)[0];
+      next = nextPageLink?.el || null;
+    }
+    if (!next) { log(`Paginación · no se halló control Next ni número ${pageNow + 1}; controles visibles=${clickables.length}; página=${pageNow}.`); return false; }
     const before = location.href;
-    const activeBefore = document.querySelector("[aria-current='page'], .artdeco-pagination__indicator--number.active");
+    const activeBefore = currentIndicator;
     const activeText = activeBefore?.innerText?.trim();
-    next.click(); state.message = "Avanzando a la siguiente página…"; log("Paginación · clic en Next después de recorrer hasta el final.");
+    const profileSignatureBefore = [...document.querySelectorAll("a[href*='/in/']")].map((a) => a.href.split("?")[0]).slice(0, 12).join("|");
+    const controlLabel = (next.getAttribute("aria-label") || next.innerText || next.textContent || "siguiente página").trim();
+    next.click(); state.message = "Avanzando a la siguiente página…"; log(`Paginación · clic en ${controlLabel} después de recorrer hasta el final.`);
     for (let i = 0; i < 30 && !state.stopped; i++) {
       await sleep(500);
-      const activeNow = document.querySelector("[aria-current='page'], .artdeco-pagination__indicator--number.active");
-      if (location.href !== before || (activeNow && activeNow.innerText.trim() !== activeText)) break;
+      const activeNow = document.querySelector('[aria-current="page"], .artdeco-pagination__indicator--number.active, [class*="pagination"] [aria-current]');
+      const signatureNow = [...document.querySelectorAll("a[href*='/in/']")].map((a) => a.href.split("?")[0]).slice(0, 12).join("|");
+      if (location.href !== before || (activeNow && (activeNow.innerText || activeNow.textContent || "").trim() !== activeText) || (signatureNow && signatureNow !== profileSignatureBefore)) break;
     }
     await sleep(1300);
-    const activeAfter = document.querySelector("[aria-current='page'], .artdeco-pagination__indicator--number.active");
-    const changed = location.href !== before || (!!activeAfter && activeAfter.innerText.trim() !== activeText);
+    const activeAfter = document.querySelector('[aria-current="page"], .artdeco-pagination__indicator--number.active, [class*="pagination"] [aria-current]');
+    const profileSignatureAfter = [...document.querySelectorAll("a[href*='/in/']")].map((a) => a.href.split("?")[0]).slice(0, 12).join("|");
+    const changed = location.href !== before || (!!activeAfter && (activeAfter.innerText || activeAfter.textContent || "").trim() !== activeText) || pageFromLabel(activeAfter) > pageNow || (!!profileSignatureAfter && profileSignatureAfter !== profileSignatureBefore);
     log(changed ? `Paginación · página nueva detectada: ${location.href}` : "Paginación · se pulsó Next pero no cambió la página.");
     return changed;
+  };
+  const waitForPageEnrichment = async (profileLinks) => {
+    let announced = false;
+    while (!state.stopped) {
+      const pending = [...profileLinks].filter((href) => {
+        const row = state.rows.find((item) => item.link === href);
+        return row && ["pending", "queued", "processing"].includes(row.enrichment_status);
+      });
+      if (!pending.length) {
+        if (announced) log(`Enriquecimiento · tareas de los ${profileLinks.size} perfiles de esta página finalizadas; listo para paginar.`);
+        return true;
+      }
+      state.message = `Esperando el enriquecimiento de ${pending.length} perfiles antes de cambiar de página…`;
+      if (!announced) { log(`Enriquecimiento · esperando ${pending.length} perfil(es) de esta página antes de paginar.`); announced = true; }
+      await sleep(500);
+    }
+    return false;
   };
   const getScroller = (anchor) => {
     let node = anchor;
@@ -316,6 +600,7 @@ function startAutomation(maxActions, keywords, extractOnly) {
       const showAll = [...document.querySelectorAll("button,a,[role='button']")].find((el) => visible(el) && /^show all$/i.test((el.innerText || el.getAttribute("aria-label") || "").trim()));
       if (showAll) { showAll.click(); await sleep(1200); log("Expandido Show all antes de recorrer tarjetas."); }
       let idle = 0, bottomRounds = 0;
+      let pageProfileLinks = new Set();
       const noConnectLogged = new Set();
       const limitReached = () => state.max > 0 && (extractOnly ? state.rows.length >= state.max : state.count >= state.max);
       while (!state.stopped && !limitReached()) {
@@ -338,6 +623,7 @@ function startAutomation(maxActions, keywords, extractOnly) {
           const href = profileHref(card);
           log(`Coincidencia · keyword="${matchedKeyword}" · titular/cargo/Current="${keywordText.replace(/\s+/g, " ").slice(0, 180)}" · perfil=${href || "sin enlace"}`);
           if (href && !state.rows.some((r) => r.link === href)) extractRow(card, text, href, cards);
+          if (href && state.rows.some((r) => r.link === href)) pageProfileLinks.add(href);
           if (extractOnly) {
             if (href && state.rows.some((r) => r.link === href)) {
               state.message = `Perfil extraído · ${state.rows.length}${state.max ? ` de ${state.max}` : ""}`;
@@ -398,8 +684,9 @@ function startAutomation(maxActions, keywords, extractOnly) {
         if (isSearch && bottomRounds >= 3) {
           // Allow lazy-loaded cards to render before deciding this page is exhausted.
           await sleep(1400);
+          if (!await waitForPageEnrichment(pageProfileLinks)) break;
           const advanced = await paginate();
-          if (advanced) { bottomRounds = 0; idle = 0; seenProfiles.clear(); continue; }
+          if (advanced) { bottomRounds = 0; idle = 0; seenProfiles.clear(); pageProfileLinks = new Set(); continue; }
           state.message = "No se encontró otra página de resultados."; log(state.message); break;
         }
         if (idle >= 8 && !isSearch && scroll.atBottom) { state.message = "No hay más acciones visibles por ahora."; log(state.message); idle = 0; await sleep(2200); }
@@ -419,19 +706,29 @@ function stopAutomation() { const s = window.__ceoAutoFollow; if (!s) return { r
 function getAutomationStatus() { const s = window.__ceoAutoFollow; return s ? { running: s.running, count: s.count, rows: s.rows, logs: s.logs, message: s.message } : null; }
 async function refreshStatus() {
   try { const s = await runOnPage(getAutomationStatus); if (!s) return;
+    await scheduleEnrichment(automationTabId, s.rows || []);
     els.total.textContent = els.extractOnly.checked ? (s.rows?.length || 0) : s.count;
-    els.downloadCsv.textContent = `Descargar CSV (${s.rows?.length || 0})`; els.downloadCsv.disabled = !(s.rows?.length);
+    els.emailCount.textContent = (s.rows || []).filter((row) => !!row.email_contacto).length;
+    els.websiteCount.textContent = (s.rows || []).filter((row) => !!row.website_contacto).length;
+    const waiting = (s.rows || []).filter((row) => ["pending", "queued"].includes(row.enrichment_status) && !enrichmentInFlight.has(row.link)).length;
+    const pendingEnrichment = waiting + enrichmentInFlight.size;
+    els.downloadCsv.textContent = pendingEnrichment ? `Enriqueciendo (${pendingEnrichment})` : `Descargar CSV (${s.rows?.length || 0})`;
+    els.downloadCsv.disabled = !(s.rows?.length) || pendingEnrichment > 0;
     const logText = (s.logs || []).join("\n");
     if (els.logOutput.value !== logText) { const wasAtBottom = els.logOutput.scrollTop + els.logOutput.clientHeight >= els.logOutput.scrollHeight - 8; els.logOutput.value = logText; if (wasAtBottom) els.logOutput.scrollTop = els.logOutput.scrollHeight; }
-    setStatus(s.message); els.start.disabled = s.running; els.stop.disabled = !s.running;
+    setStatus(pendingEnrichment ? `${s.message} · Enriqueciendo perfiles; quedan ${pendingEnrichment}.` : s.message); els.start.disabled = s.running; els.stop.disabled = !s.running;
   } catch { }
 }
 els.start.addEventListener("click", async () => {
   const max = Math.max(0, Number.parseInt(els.limit.value, 10) || 0);
+  const enrichmentConcurrency = Math.min(20, Math.max(1, Number.parseInt(els.enrichmentConcurrency.value, 10) || 5));
+  els.enrichmentConcurrency.value = String(enrichmentConcurrency);
   const keywords = [...els.keywords.querySelectorAll("input")].map((i) => i.value.trim()).filter(Boolean);
   if (!keywords.length) { setStatus("Agrega al menos una keyword para iniciar."); return; }
   saveSettings(); els.start.disabled = true; setStatus("Iniciando la búsqueda…");
-  try { const result = await runOnPage(startAutomation, [max, keywords, els.extractOnly.checked]);
+  try {
+    const tab = await getActiveTab(); automationTabId = tab?.id || null;
+    const result = await runOnPage(startAutomation, [max, keywords, els.extractOnly.checked, enrichmentConcurrency]);
     setStatus(result?.started ? "Automatización iniciada." : "La automatización ya está en marcha."); els.stop.disabled = false;
   } catch { setStatus("No se pudo iniciar. Abre LinkedIn y vuelve a intentarlo."); els.start.disabled = false; }
 });
@@ -448,8 +745,8 @@ els.downloadCsv.addEventListener("click", async () => {
     if (!rows.length) return;
     const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
     const csv = [
-      ["Nombre", "Titular", "Ubicación", "Link LinkedIn", "estado_contacto", "empresa_actual"],
-      ...rows.map((r) => [r.name, r.headline, r.location, r.link, r.estado_contacto, r.empresa_actual])
+      ["Nombre", "Titular", "Ubicación", "Link LinkedIn", "estado_contacto", "empresa_actual", "email_contacto", "website_contacto"],
+      ...rows.map((r) => [r.name, r.headline, r.location, r.link, r.estado_contacto, r.empresa_actual, r.email_contacto, r.website_contacto])
     ].map((r) => r.map(esc).join(",")).join("\r\n");
     const url = URL.createObjectURL(new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" }));
     const a = document.createElement("a"); a.href = url; a.download = "perfiles-linkedin.csv"; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
