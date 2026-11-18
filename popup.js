@@ -4,7 +4,7 @@ const els = {
   limit: document.getElementById("limit"), enrichmentConcurrency: document.getElementById("enrichmentConcurrency"), start: document.getElementById("start"), stop: document.getElementById("stop"),
   keywords: document.getElementById("keywords"), addKeyword: document.getElementById("addKeyword"),
   extractOnly: document.getElementById("extractOnly"), downloadCsv: document.getElementById("downloadCsv"),
-  logOutput: document.getElementById("logOutput"), copyLog: document.getElementById("copyLog")
+  logOutput: document.getElementById("logOutput"), copyLog: document.getElementById("copyLog"), clearData: document.getElementById("clearData")
 };
 const setStatus = (message) => { els.status.textContent = message; };
 async function getActiveTab() { const [tab] = await chrome.tabs.query({ active: true, currentWindow: true }); return tab; }
@@ -90,15 +90,29 @@ function isContactInfoUrl(value) {
 }
 async function clickContactInfoInProfileTab() {
   const visible = (el) => { const r = el.getBoundingClientRect(), s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden"; };
+  const selectorFor = (el) => {
+    if (!el) return "";
+    if (el.id) return `#${CSS.escape(el.id)}`;
+    const parts = []; let node = el;
+    while (node && node !== document.body && node.nodeType === 1) {
+      let part = node.tagName.toLowerCase();
+      if (node.classList.length) part += [...node.classList].slice(0, 4).map((name) => `.${CSS.escape(name)}`).join("");
+      parts.unshift(part);
+      const selector = parts.join(" > ");
+      try { if ([...document.querySelectorAll(selector)].length === 1) return selector; } catch { }
+      node = node.parentElement;
+    }
+    return parts.join(" > ");
+  };
   const roots = [document];
   for (let i = 0; i < roots.length; i++) for (const el of roots[i].querySelectorAll("*")) if (el.shadowRoot) roots.push(el.shadowRoot);
   const control = roots.flatMap((root) => [...root.querySelectorAll("a,button,[role='link'],[role='button']")]).find((el) => {
     const labels = [el.getAttribute("aria-label"), el.innerText, el.textContent].filter(Boolean).map((label) => label.replace(/\s+/g, " ").trim());
     return visible(el) && labels.some((label) => /^(contact info|see contact info|contact information|información de contacto)$/i.test(label));
   });
-  if (!control) return false;
+  if (!control) return { clicked: false };
   control.click();
-  return true;
+  return { clicked: true, selector: selectorFor(control) };
 }
 async function contactInfoPanelReadyInProfileTab() {
   const visible = (el) => { const r = el.getBoundingClientRect(), s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden"; };
@@ -128,11 +142,35 @@ async function scrapeContactInfoPanelInProfileTab() {
   if (!panel && /\/overlay\/contact-info\/?$/i.test(location.pathname)) panel = document.body;
   if (!panel || !visible(panel)) return { ok: false, contactInfoOpened: false, error: "No se encontró el contenido del panel Contact info." };
   const text = (panel.innerText || panel.textContent || "").replace(/\u00a0/g, " ");
+  const selectorFor = (el) => {
+    if (!el) return "";
+    if (el.id) return `#${CSS.escape(el.id)}`;
+    const parts = []; let node = el;
+    while (node && node !== panel && node.nodeType === 1) {
+      let part = node.tagName.toLowerCase();
+      if (node.classList.length) part += [...node.classList].slice(0, 4).map((name) => `.${CSS.escape(name)}`).join("");
+      parts.unshift(part);
+      const selector = parts.join(" > ");
+      try { if ([...panel.querySelectorAll(selector)].length === 1) return selector; } catch { }
+      node = node.parentElement;
+    }
+    return parts.join(" > ");
+  };
   const extractEmailByAt = (value) => {
     const match = (value || "").match(/[^\s<>()[\]{}"'`,;]+@[^\s<>()[\]{}"'`,;]+/);
     return match?.[0]?.replace(/^[.,:;]+|[.,:;.!?]+$/g, "") || "";
   };
-  const emailAnchor = [...panel.querySelectorAll("a[href]")].find((a) => visible(a) && (/^mailto:/i.test(a.href) || (a.innerText || a.textContent || "").includes("@") || (a.getAttribute("aria-label") || "").includes("@")));
+  const knownEmailSelectors = ["#envelope-outline-medium", ".aaaayy.aaaiu3.aaaj1t.aaaj06.aaaj1j.aaaiyn.aaaia7.aaal5q"];
+  const emailScopes = knownEmailSelectors.flatMap((selector) => {
+    let hits = []; try { hits = [...panel.querySelectorAll(selector)]; } catch { }
+    return hits.flatMap((hit) => {
+      const scopes = []; let node = hit;
+      for (let depth = 0; node && depth < 5 && panel.contains(node); depth++, node = node.parentElement) scopes.push(node);
+      return scopes.flatMap((scope) => [...scope.querySelectorAll("a[href]")]).filter((a) => visible(a));
+    });
+  });
+  const emailCandidates = [...new Set([...emailScopes, ...panel.querySelectorAll("a[href]")])];
+  const emailAnchor = emailCandidates.find((a) => visible(a) && (/^mailto:/i.test(a.href) || (a.innerText || a.textContent || "").includes("@") || (a.getAttribute("aria-label") || "").includes("@")));
   const email = (emailAnchor?.getAttribute("href") || "").replace(/^mailto:/i, "").split("?")[0]
     || extractEmailByAt(emailAnchor?.innerText || emailAnchor?.textContent || emailAnchor?.getAttribute("aria-label"))
     || extractEmailByAt(text);
@@ -148,17 +186,31 @@ async function scrapeContactInfoPanelInProfileTab() {
   const labelElements = [...panel.querySelectorAll("a,button,[role='link'],[role='button'],span,div,p")].filter((el) => visible(el));
   const websiteLabel = labelElements.find((el) => /^website$/i.test((el.innerText || el.textContent || "").replace(/\s+/g, " ").trim()));
   let website = "";
+  let websiteAnchor = null;
   let labelAncestor = websiteLabel;
   for (let depth = 0; labelAncestor && depth < 7 && !website; depth++, labelAncestor = labelAncestor.parentElement) {
-    website = [...labelAncestor.querySelectorAll("a[href]")].map((a) => cleanExternalUrl(a.href)).find(Boolean) || "";
+    websiteAnchor = [...labelAncestor.querySelectorAll("a[href]")].find((a) => cleanExternalUrl(a.href)) || null;
+    website = websiteAnchor ? cleanExternalUrl(websiteAnchor.href) : "";
   }
-  if (!website) website = [...panel.querySelectorAll("a[href]")].map((a) => cleanExternalUrl(a.href)).find(Boolean) || "";
+  if (!website) {
+    const knownWebsiteSelectors = ["#link-outline-medium", ".aaal6d.aaaayy.aaaiun.aaaj1t.aaaj08.aaaj1j.aaaix7.aaal5q"];
+    const knownWebsiteNodes = knownWebsiteSelectors.flatMap((selector) => { try { return [...panel.querySelectorAll(selector)]; } catch { return []; } });
+    for (const hit of knownWebsiteNodes) {
+      let scope = hit;
+      for (let depth = 0; scope && depth < 6 && panel.contains(scope) && !website; depth++, scope = scope.parentElement) {
+        websiteAnchor = [...scope.querySelectorAll("a[href]")].find((a) => cleanExternalUrl(a.href)) || null;
+        website = websiteAnchor ? cleanExternalUrl(websiteAnchor.href) : "";
+      }
+      if (website) break;
+    }
+  }
+  if (!website) { websiteAnchor = [...panel.querySelectorAll("a[href]")].find((a) => cleanExternalUrl(a.href)) || null; website = websiteAnchor ? cleanExternalUrl(websiteAnchor.href) : ""; }
   if (!website) {
     const afterLabel = text.match(/Website\s*([\s\S]{0,300})/i)?.[1] || "";
     website = afterLabel.match(/https?:\/\/[^\s)]+/i)?.[0] || afterLabel.match(/(?:www\.)?[A-Z0-9-]+(?:\.[A-Z0-9-]+)*\.[A-Z]{2,}(?:\/[^\s)]*)?/i)?.[0] || "";
     if (website && !/^https?:/i.test(website)) website = `https://${website}`;
   }
-  return { ok: true, contactInfoOpened: true, email, website };
+  return { ok: true, contactInfoOpened: true, email, website, selectors: { email: selectorFor(emailAnchor), website: selectorFor(websiteAnchor) } };
 }
 async function enrichOneProfile(sourceTabId, href) {
   let profileTabId = null;
@@ -183,6 +235,7 @@ async function enrichOneProfile(sourceTabId, href) {
       row.email_contacto = data.email || ""; row.website_contacto = data.website || "";
       row.enrichment_status = data.ok ? "complete" : "error";
       s.logs.push(`${new Date().toLocaleTimeString()} Enriquecimiento · ${data.ok ? `email=${data.email ? "sí" : "no"} · website=${data.website ? "sí" : "no"}` : data.error} · Contact info=${data.contactInfoOpened ? "abierto desde el perfil" : "no abierto"} · pestaña=${data.tabClosed ? "cerrada" : "no cerrada"} · ${profileHref}`);
+      if (data.contactInfoSelector || (data.selectors && (data.selectors.email || data.selectors.website))) s.logs.push(`${new Date().toLocaleTimeString()} Autoaprendizaje · selectores Contact info · botón=${data.contactInfoSelector || "sin dato"} · email=${data.selectors?.email || "sin dato"} · website=${data.selectors?.website || "sin dato"}`);
       if (s.logs.length > 250) s.logs.splice(0, s.logs.length - 250);
       return { emails: s.rows.filter((item) => !!item.email_contacto).length, websites: s.rows.filter((item) => !!item.website_contacto).length };
     }, args: [href, { ...payload, tabClosed: profileTabClosed }] });
@@ -193,7 +246,7 @@ async function enrichOneProfile(sourceTabId, href) {
     const created = await chrome.tabs.create({ url: profilePageUrl(href), active: false });
     profileTabId = created.id; enrichmentTabs.add(profileTabId);
     await waitForTabLoad(profileTabId);
-    let panelOpened = false, clickSucceeded = false, clickAttempts = 0, lastClickAt = 0;
+    let panelOpened = false, clickSucceeded = false, clickAttempts = 0, lastClickAt = 0, contactInfoSelector = "";
     for (let attempt = 0; attempt < 36 && !panelOpened; attempt++) {
       const tab = await chrome.tabs.get(profileTabId).catch(() => null);
       if (tab && isContactInfoUrl(tab.url)) {
@@ -207,7 +260,8 @@ async function enrichOneProfile(sourceTabId, href) {
           lastClickAt = Date.now();
           clickAttempts++;
           const clicked = await chrome.scripting.executeScript({ target: { tabId: profileTabId }, func: clickContactInfoInProfileTab }).catch(() => null);
-          clickSucceeded = !!clicked?.[0]?.result;
+          clickSucceeded = !!(clicked?.[0]?.result?.clicked ?? clicked?.[0]?.result);
+          contactInfoSelector = clicked?.[0]?.result?.selector || contactInfoSelector;
         }
         if (!panelOpened) await new Promise((resolve) => setTimeout(resolve, 500));
       }
@@ -226,6 +280,7 @@ async function enrichOneProfile(sourceTabId, href) {
       await new Promise((resolve) => setTimeout(resolve, 700));
     }
     if (!payload) payload = { ok: false, contactInfoOpened: true, error: "Contact info abrió, pero no devolvió datos legibles." };
+    payload.contactInfoSelector = contactInfoSelector;
     if (!await closeProfileTab()) throw new Error("No se pudo cerrar la pestaña de enriquecimiento.");
     await writeResultToSearchTab(payload);
   } catch (error) {
@@ -241,7 +296,10 @@ async function scheduleEnrichment(sourceTabId, rows) {
   const setting = Math.min(20, Math.max(1, Number.parseInt(els.enrichmentConcurrency.value, 10) || 5));
   const capacity = setting - enrichmentInFlight.size;
   if (capacity <= 0) return;
-  const candidates = rows.filter((row) => row.link && ["pending", "queued"].includes(row.enrichment_status) && !enrichmentInFlight.has(row.link)).slice(0, capacity);
+  // Recover rows orphaned when the popup closed during enrichment.
+  const candidates = rows.filter((row) => row.link && (["pending", "queued"].includes(row.enrichment_status)
+    || (row.enrichment_status === "processing" && !enrichmentInFlight.has(row.link)))
+    && !enrichmentInFlight.has(row.link)).slice(0, capacity);
   if (!candidates.length) return;
   const links = candidates.map((row) => row.link);
   const claimResult = await chrome.scripting.executeScript({ target: { tabId: sourceTabId }, func: (candidateLinks) => {
@@ -249,7 +307,7 @@ async function scheduleEnrichment(sourceTabId, rows) {
     const claimed = [];
     for (const link of candidateLinks) {
       const row = state.rows.find((item) => item.link === link);
-      if (row && ["pending", "queued"].includes(row.enrichment_status)) { row.enrichment_status = "processing"; claimed.push(link); }
+      if (row && (["pending", "queued"].includes(row.enrichment_status) || row.enrichment_status === "processing")) { row.enrichment_status = "processing"; claimed.push(link); }
     }
     return claimed;
   }, args: [links] }).catch(() => null);
@@ -274,9 +332,178 @@ function startAutomation(maxActions, keywords, extractOnly, enrichmentConcurrenc
   const clicked = new WeakSet(); const seenProfiles = new Set(); const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const visible = (el) => { const r = el.getBoundingClientRect(), s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.visibility !== "hidden" && s.display !== "none"; };
   const inViewport = (el) => { const r = el.getBoundingClientRect(); return r.bottom > 0 && r.top < window.innerHeight && r.right > 0 && r.left < window.innerWidth; };
-  const contactCardSelector = ".mxtl50.mxtivr.mxtlce.mxtlcv.mxtldd.mxtldu.mxtayy.mxtiun.mxtj1t.mxtj08.mxtj1j.mxtixb.mxtl5q";
+  const contactCardSelector = [
+    ".aaal6d.aaaivr.aaalce.aaalcv.aaaldd.aaaldu.aaaayy.aaaiun.aaaj1t.aaaj08.aaaj1j.aaaixb.aaal5q",
+    ".mxtl50.mxtivr.mxtlce.mxtlcv.mxtldd.mxtldu.mxtayy.mxtiun.mxtj1t.mxtj08.mxtj1j.mxtixb.mxtl5q"
+  ].join(", ");
   const roleTextSelector = "a.mxtmg5.mxtmg4 > div.mxtl50.mxtivr > div.mxtayy.mxtiu3:nth-of-type(1) > div.mxtl50.mxtivr:nth-of-type(2) > div.mxtlis.mxtgpp:nth-of-type(2) > p.mxtlje.mxtlo0";
   const isSearch = location.pathname.includes("/search/results/people");
+  const normalizeProfileHref = (value) => {
+    try {
+      const url = new URL(value, location.href);
+      url.pathname = url.pathname.replace(/\/en\/?$/i, "/").replace(/\/$/, "") + "/";
+      url.search = ""; url.hash = "";
+      return /\/in\//i.test(url.pathname) ? url.href : "";
+    } catch { return ""; }
+  };
+  const learnedSelectors = Object.create(null);
+  let learnedSelectorPage = "";
+  let learnedSelectorLogs = new Set();
+  // Selector examples supplied during debugging. Keep these as candidates,
+  // validate them against the current DOM, and let live page evidence decide
+  // which one is usable. Text examples are probes, not hard-coded matches.
+  const selectorHintCatalog = {
+    card: [
+      { type: "css", selector: ".aaal6d.aaaivr.aaalce.aaalcv.aaaldd.aaaldu.aaaayy.aaaiun.aaaj1t.aaaj08.aaaj1j.aaaixb.aaal5q" },
+      { type: "css", selector: ".mxtl50.mxtivr.mxtlce.mxtlcv.mxtldd.mxtldu.mxtayy.mxtiun.mxtj1t.mxtj08.mxtj1j.mxtixb.mxtl5q" },
+      { type: "css", selector: "div.aaaayq > a.aaamic > div.aaal6d" },
+      { type: "xpath", selector: "//div/a/div" }
+    ],
+    keyword: [
+      { type: "css", selector: "div.aaalis > p.aaalje > span" },
+      { type: "text", text: "Payments & Fintech Senior Executive | Scaling Global", exact: false },
+      { type: "text", text: "CEO at Getnet | Global, Fintech , Leadership", exact: true },
+      { type: "text", text: "Driving Fintech Innovation @ Finom", exact: true }
+    ],
+    name: [{ type: "text", text: "Dan Patiño", exact: true }],
+    location: [{ type: "text", text: "Buenos Aires, Buenos Aires Province, Argentina", exact: true }],
+    currentRole: [{ type: "text", text: "Current: Co-founder & CTO at Fex -Solutions", exact: true }],
+    legacyRole: [{ type: "css", selector: "a.mxtmg5.mxtmg4 > div.mxtl50.mxtivr > div.mxtayy.mxtiu3:nth-of-type(1) > div.mxtl50.mxtivr:nth-of-type(2) > div.mxtlis.mxtgpp:nth-of-type(2) > p.mxtlje.mxtlo0" }],
+    connect: [
+      { type: "text", text: "Connect", exact: true },
+      { type: "css", selector: '[id^="SearchResultsA"] a.mxtlxl.mxtlxk > span.mxtlzr.mxtlyb' },
+      { type: "css", selector: "#SearchResultsACoAACx3NjUBkiYGL45kX_RzL4VP3gAvVdN9rbI > div.mxtayq.mxtl5q > div.mxta2a.mxtht3 > div.mxtayq.mxtl5q > a.mxtlxl.mxtlxk > span.mxtlzr.mxtlyb" },
+      { type: "xpath", selector: "//body/div[1]/div[1]/div[2]/div[2]/main/div/div/div/div[2]/div/section/div/div/div/div[1]/div[1]/div/div[1]/div/div/a/div/div[1]/div[2]/div/div/div/div/a/span" }
+    ],
+    sendWithoutNote: [{ type: "text", text: "Send without a note", exact: true }],
+    contactInfo: [{ type: "text", text: "Contact info", exact: true }],
+    email: [
+      { type: "css", selector: "#envelope-outline-medium" },
+      { type: "css", selector: ".aaaayy.aaaiu3.aaaj1t.aaaj06.aaaj1j.aaaiyn.aaaia7.aaal5q" },
+      { type: "text", text: "Email", exact: true },
+      { type: "text", text: "(Personal)", exact: true },
+      { type: "text", text: "@", exact: false }
+    ],
+    website: [
+      { type: "css", selector: "#link-outline-medium" },
+      { type: "css", selector: ".aaal6d.aaaayy.aaaiun.aaaj1t.aaaj08.aaaj1j.aaaix7.aaal5q" },
+      { type: "text", text: "Website", exact: true }
+    ],
+    pagination: [
+      { type: "text", text: "Next", exact: true },
+      { type: "text", text: "2", exact: true }
+    ]
+  };
+  const hintElements = (hint, root = document) => {
+    try {
+      if (hint.type === "css") return [...root.querySelectorAll(hint.selector)];
+      if (hint.type === "xpath") {
+        const doc = root.ownerDocument || root;
+        const result = doc.evaluate(hint.selector, root, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+        return Array.from({ length: result.snapshotLength }, (_, index) => result.snapshotItem(index)).filter((el) => el?.nodeType === 1);
+      }
+      if (hint.type === "text") {
+        const target = hint.text.toLocaleLowerCase();
+        return [...root.querySelectorAll("a,button,[role='button'],[role='link'],span,p,div")].filter((el) => {
+          const text = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim().toLocaleLowerCase();
+          return hint.exact ? text === target : text.includes(target);
+        });
+      }
+    } catch { }
+    return [];
+  };
+  const probeSelectorHints = () => {
+    const summary = [];
+    for (const [kind, hints] of Object.entries(selectorHintCatalog)) {
+      const probes = hints.map((hint) => ({ hint, found: hintElements(hint).filter(visible) }));
+      let validCount = 0;
+      for (const { hint, found } of probes) {
+        if (kind === "card") validCount += found.filter((el) => new Set([...el.querySelectorAll("a[href*='/in/']")].map((a) => normalizeProfileHref(a.href)).filter(Boolean)).size === 1).length;
+        else if (kind === "keyword") validCount += found.filter((el) => (el.innerText || el.textContent || "").trim().length > 8).length;
+        else if (kind === "connect" || kind === "sendWithoutNote" || kind === "contactInfo") {
+          const expected = kind === "connect" ? "connect" : kind === "sendWithoutNote" ? "send without a note" : "contact info";
+          validCount += found.filter((el) => (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim().toLocaleLowerCase() === expected).length;
+        }
+        else if (kind === "pagination") validCount += found.length;
+        else if (["name", "location", "currentRole"].includes(kind)) validCount += found.length;
+        else if (kind === "email") validCount += found.filter((el) => /@|email/i.test(`${el.getAttribute("href") || ""} ${el.innerText || el.textContent || ""}`)).length;
+        else if (kind === "website") validCount += found.filter((el) => /website|https?:\/\//i.test(`${el.getAttribute("href") || ""} ${el.innerText || el.textContent || ""}`)).length;
+      }
+      summary.push(`${kind}=${validCount}/${probes.length} selectores con coincidencias`);
+    }
+    state.selectorHintCalibration = Object.fromEntries(Object.entries(selectorHintCatalog).map(([kind, hints]) => [kind, hints.map((hint) => ({ ...hint, matches: hintElements(hint).filter(visible).length }))]));
+    log(`Autoaprendizaje · selectores aportados evaluados antes del escaneo · ${summary.join(" · ")}`);
+  };
+  const selectorForElement = (element, root = document) => {
+    if (!element || !root?.querySelectorAll) return "";
+    const matchesTarget = (selector) => {
+      try { const found = [...root.querySelectorAll(selector)]; return found.length === 1 && found[0] === element; }
+      catch { return false; }
+    };
+    if (element.id) {
+      const idSelector = `#${CSS.escape(element.id)}`;
+      if (matchesTarget(idSelector)) return idSelector;
+    }
+    const segments = [];
+    let node = element;
+    while (node && node !== root && node.nodeType === 1) {
+      const tag = node.tagName.toLowerCase();
+      const classes = [...node.classList].filter(Boolean);
+      let segment = tag + classes.map((name) => `.${CSS.escape(name)}`).join("");
+      if (!classes.length) {
+        const siblings = [...(node.parentElement?.children || [])].filter((sibling) => sibling.tagName === node.tagName);
+        if (siblings.length > 1) segment += `:nth-of-type(${siblings.indexOf(node) + 1})`;
+      }
+      segments.unshift(segment);
+      const selector = segments.join(" > ");
+      if (matchesTarget(selector)) return selector;
+      node = node.parentElement;
+    }
+    return segments.join(" > ");
+  };
+  const rememberSelector = (kind, element, root = document) => {
+    const selector = selectorForElement(element, root);
+    if (!selector) return "";
+    learnedSelectors[kind] = selector;
+    state.learnedSelectors = { ...learnedSelectors };
+    if (!learnedSelectorLogs.has(kind)) {
+      learnedSelectorLogs.add(kind);
+      log(`Autoaprendizaje · selector ${kind}=${selector}`);
+    }
+    return selector;
+  };
+  const useLearnedSelector = (kind, root = document) => {
+    const selector = learnedSelectors[kind];
+    if (!selector || !root?.querySelectorAll) return [];
+    try { return [...root.querySelectorAll(selector)]; } catch { return []; }
+  };
+  const learnBestCardSelector = (candidates) => {
+    const selectors = new Set([contactCardSelector, "li", ".artdeco-card", "[data-view-name*='search-result']"]);
+    for (const hint of selectorHintCatalog.card) if (hint.type === "css") selectors.add(hint.selector);
+    for (const element of [...candidates].slice(0, 18)) {
+      const tag = element.tagName.toLowerCase();
+      const classes = [...element.classList].filter(Boolean).slice(0, 8);
+      for (const name of classes) selectors.add(`${tag}.${CSS.escape(name)}`);
+      if (classes.length) selectors.add(`${tag}${classes.map((name) => `.${CSS.escape(name)}`).join("")}`);
+    }
+    let best = null;
+    for (const selector of selectors) {
+      let found;
+      try { found = [...document.querySelectorAll(selector)]; } catch { continue; }
+      if (!found.length) continue;
+      const valid = found.filter((element) => {
+        const links = new Set([...element.querySelectorAll("a[href*='/in/']")].map((a) => normalizeProfileHref(a.href)).filter(Boolean));
+        const text = (element.innerText || "").trim();
+        const actions = [...element.querySelectorAll("button,a,[role='button']")].some((control) => /^(connect|follow|pending|message)$/i.test((control.innerText || control.getAttribute("aria-label") || "").trim()));
+        return links.size === 1 && text.length > 35 && (actions || element.matches(contactCardSelector));
+      });
+      const hrefs = new Set(valid.map((element) => normalizeProfileHref(element.querySelector("a[href*='/in/']")?.href || "")).filter(Boolean));
+      if (!hrefs.size) continue;
+      const score = hrefs.size * 100 - Math.max(0, valid.length - hrefs.size) * 18 - Math.max(0, found.length - valid.length) * 12 - selector.length * 0.02;
+      if (!best || score > best.score) best = { selector, score, hrefCount: hrefs.size };
+    }
+    return best;
+  };
   const checkLimits = () => {
     const t = (document.body?.innerText || "").replace(/\s+/g, " ").toLowerCase();
     if (/reached the weekly limit for connection invitations|weekly invitation limit/.test(t)) { state.stopped = true; state.message = "Límite semanal de invitaciones alcanzado. Automatización detenida."; log(state.message); return true; }
@@ -295,7 +522,8 @@ function startAutomation(maxActions, keywords, extractOnly, enrichmentConcurrenc
       }
       state.sendNoteShadowRoots = shadowRoots;
       for (const root of roots) {
-        const span = [...root.querySelectorAll("span")].find((el) =>
+        const hinted = hintElements(selectorHintCatalog.sendWithoutNote[0], root).find(visible);
+        const span = hinted || [...root.querySelectorAll("span")].find((el) =>
           (el.innerText || el.textContent || "").toLowerCase().includes("send without a note") && visible(el)
         );
         if (span) return span;
@@ -325,13 +553,13 @@ function startAutomation(maxActions, keywords, extractOnly, enrichmentConcurrenc
     for (let d = 0; n && d < 12; d++, n = n.parentElement) {
       if (n.matches(contactCardSelector)) return n;
       if (n.matches("li, .artdeco-card, .discover-entity-type-card, [data-view-name*='search-result'], [data-view-name*='recommendation']")) return n;
-      const profileLinks = new Set([...n.querySelectorAll("a[href*='/in/']")].map((a) => a.href.split("?")[0]));
+      const profileLinks = new Set([...n.querySelectorAll("a[href*='/in/']")].map((a) => normalizeProfileHref(a.href)).filter(Boolean));
       const hasAction = [...n.querySelectorAll("button, a[role='button'], [role='button']")].some((el) => /^(follow|connect)$/i.test((el.innerText || el.getAttribute("aria-label") || "").trim()));
       if (profileLinks.size === 1 && hasAction) return n;
     }
     n = button; for (let d = 0; n.parentElement && d < 6; d++) n = n.parentElement; return n;
   };
-  const profileHref = (card) => card.querySelector("a[href*='/in/']")?.href?.split("?")[0] || "";
+  const profileHref = (card) => normalizeProfileHref(card.querySelector("a[href*='/in/']")?.href || "");
   const getCardText = (card) => {
     const roleTexts = [...card.querySelectorAll(roleTextSelector)].map((el) => el.innerText.trim()).filter(Boolean);
     const currentTexts = [...card.querySelectorAll("p, span, div")].map((el) => (el.innerText || "").trim())
@@ -361,15 +589,26 @@ function startAutomation(maxActions, keywords, extractOnly, enrichmentConcurrenc
     return headline.join("\n");
   };
   const getKeywordText = (card) => {
-    const roleTexts = [...card.querySelectorAll(roleTextSelector)].map((el) => (el.innerText || el.textContent || "").trim()).filter(Boolean);
-    return [...new Set([...roleTexts, getHeadlineText(card), getCurrentText(card)].filter(Boolean))].join("\n");
+    // Keywords are defined against the headline directly below the person's
+    // name. Prefer the current LinkedIn selector, then compatible variants;
+    // the line-based parser is a fallback for layouts/classes that change.
+    const headlineNodes = [...new Set([
+      ...selectorHintCatalog.keyword.filter((hint) => hint.type === "css").flatMap((hint) => hintElements(hint, card)),
+      ...card.querySelectorAll("div.aaalis p.aaalje > span, p.aaalje > span")
+    ])];
+    const headlines = [...new Set(headlineNodes.map((el) => (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim()).filter(Boolean))];
+    if (headlines.length) return headlines.join("\n");
+    return getHeadlineText(card);
   };
   const getActionControl = (card, cardIndex, allCards) => {
     // Match Playwright getByText('Connect', { exact: true }) within this one
     // contact card. Click the smallest exact-text element so the card itself is
     // never the target. Ignore any Connect text nested in the profile link.
     const labelText = (el) => (el.innerText || "").trim() || (el.textContent || "").trim() || (el.getAttribute("aria-label") || "").trim();
-    const matches = [...card.querySelectorAll("button, [role='button'], a, span, div")]
+    const hintedMatches = selectorHintCatalog.connect.flatMap((hint) => hintElements(hint, card));
+    const learnedMatches = [...useLearnedSelector("connect", card), ...hintedMatches]
+      .filter((el) => labelText(el) === "Connect" && visible(el) && inViewport(el));
+    const matches = [...new Set([...learnedMatches, ...card.querySelectorAll("button, [role='button'], a, span, div")])]
       .filter((el) => labelText(el) === "Connect" && visible(el) && inViewport(el));
     const leaves = matches.filter((el) => ![...el.children].some((child) => labelText(child) === "Connect"));
     for (const candidate of leaves) {
@@ -399,7 +638,7 @@ function startAutomation(maxActions, keywords, extractOnly, enrichmentConcurrenc
       if (!belongsToCard) {
         let ancestor = label.parentElement;
         while (ancestor && ancestor !== document.body && !belongsToCard) {
-          const links = [...new Set([...ancestor.querySelectorAll("a[href*='/in/']")].map((a) => a.href.split("?")[0]))];
+          const links = [...new Set([...ancestor.querySelectorAll("a[href*='/in/']")].map((a) => normalizeProfileHref(a.href)).filter(Boolean))];
           if (links.length === 1 && profile && links[0] === profile) belongsToCard = true;
           ancestor = ancestor.parentElement;
         }
@@ -433,7 +672,7 @@ function startAutomation(maxActions, keywords, extractOnly, enrichmentConcurrenc
     // In some LinkedIn layouts the action lives outside the result-card wrapper.
     // Search all rendered action labels, then associate each with the nearest
     // result card by screen geometry instead of relying on obfuscated class names.
-    const labels = [...document.querySelectorAll("button, a, [role='button'], [aria-label], [title], span, div")]
+    const labels = [...new Set([...useLearnedSelector("status"), ...document.querySelectorAll("button, a, [role='button'], [aria-label], [title], span, div")])]
       .filter((el) => normalizedStatus(el) && visible(el));
     const checked = new Set();
     for (const label of labels) {
@@ -447,14 +686,14 @@ function startAutomation(maxActions, keywords, extractOnly, enrichmentConcurrenc
         const distance = midY < cardRect.top ? cardRect.top - midY : midY > cardRect.bottom ? midY - cardRect.bottom : 0;
         if (distance < nearestDistance) { nearest = candidate; nearestDistance = distance; }
       }
-      if (nearest === card && nearestDistance <= Math.max(100, rect.height * 4)) return normalizedStatus(label);
+      if (nearest === card && nearestDistance <= Math.max(100, rect.height * 4)) { rememberSelector("status", action); return normalizedStatus(label); }
     }
     return false;
   };
   const extractRow = (card, text, href, allCards) => {
     if (!href || state.rows.some((r) => r.link === href)) return;
     const anchors = [...card.querySelectorAll("a[href*='/in/']")];
-    const name = (anchors.find((a) => a.href.split("?")[0] === href)?.innerText || "").trim().split("\n")[0];
+    const name = (anchors.find((a) => normalizeProfileHref(a.href) === href)?.innerText || "").trim().split("\n")[0];
     const singleLine = (value) => String(value || "").replace(/[\r\n\t]+/g, " ").replace(/\s{2,}/g, " ").trim();
     const lines = text.split("\n").map(singleLine).filter(Boolean);
     const locationPattern = /(?:,\s*)?(?:united states|argentina|canada|united kingdom|mexico|brazil|spain|chile|colombia|peru|uruguay|paraguay|bolivia|ecuador|france|germany|italy|portugal|netherlands|ireland|australia|new zealand|singapore|japan|china|israel|sweden|norway|denmark|switzerland|poland|romania|ukraine|kazakhstan|remote)\s*$/i;
@@ -510,7 +749,10 @@ function startAutomation(maxActions, keywords, extractOnly, enrichmentConcurrenc
       const classes = typeof el.className === "string" ? el.className : "";
       return /^next(?:\s+page)?\s*[›>→]*$/i.test(semantic) || /^next(?:\s+page)?\s*[›>→]*$/i.test(text) || /pagination__button--next|chevron-right/i.test(classes);
     };
-    let next = clickables.find((el) => isNextLabel(el) && (!paginationRoot || inPagination(el)));
+    let next = useLearnedSelector("next").find((el) => clickables.includes(el) && isNextLabel(el) && (!paginationRoot || inPagination(el)));
+    if (!next) next = hintElements(selectorHintCatalog.pagination[0], paginationRoot || document)
+      .find((el) => clickables.includes(el) && isNextLabel(el) && (!paginationRoot || inPagination(el)));
+    if (!next) next = clickables.find((el) => isNextLabel(el) && (!paginationRoot || inPagination(el)));
     if (!next && paginationRoot) next = [...paginationRoot.querySelectorAll("button,a,[role='button'],[tabindex='0']")]
       .find((el) => visible(el) && !el.disabled && el.getAttribute("aria-disabled") !== "true" && (el.querySelector("svg[aria-label*='right' i], svg[class*='chevron-right']") || el.matches("button[class*='next'],a[class*='next']")));
     if (!next && paginationRoot) {
@@ -531,21 +773,22 @@ function startAutomation(maxActions, keywords, extractOnly, enrichmentConcurrenc
       next = nextPageLink?.el || null;
     }
     if (!next) { log(`Paginación · no se halló control Next ni número ${pageNow + 1}; controles visibles=${clickables.length}; página=${pageNow}.`); return false; }
+    rememberSelector("next", next);
     const before = location.href;
     const activeBefore = currentIndicator;
     const activeText = activeBefore?.innerText?.trim();
-    const profileSignatureBefore = [...document.querySelectorAll("a[href*='/in/']")].map((a) => a.href.split("?")[0]).slice(0, 12).join("|");
+    const profileSignatureBefore = [...new Set([...document.querySelectorAll("a[href*='/in/']")].map((a) => normalizeProfileHref(a.href)).filter(Boolean))].slice(0, 12).join("|");
     const controlLabel = (next.getAttribute("aria-label") || next.innerText || next.textContent || "siguiente página").trim();
     next.click(); state.message = "Avanzando a la siguiente página…"; log(`Paginación · clic en ${controlLabel} después de recorrer hasta el final.`);
     for (let i = 0; i < 30 && !state.stopped; i++) {
       await sleep(500);
       const activeNow = document.querySelector('[aria-current="page"], .artdeco-pagination__indicator--number.active, [class*="pagination"] [aria-current]');
-      const signatureNow = [...document.querySelectorAll("a[href*='/in/']")].map((a) => a.href.split("?")[0]).slice(0, 12).join("|");
+      const signatureNow = [...new Set([...document.querySelectorAll("a[href*='/in/']")].map((a) => normalizeProfileHref(a.href)).filter(Boolean))].slice(0, 12).join("|");
       if (location.href !== before || (activeNow && (activeNow.innerText || activeNow.textContent || "").trim() !== activeText) || (signatureNow && signatureNow !== profileSignatureBefore)) break;
     }
     await sleep(1300);
     const activeAfter = document.querySelector('[aria-current="page"], .artdeco-pagination__indicator--number.active, [class*="pagination"] [aria-current]');
-    const profileSignatureAfter = [...document.querySelectorAll("a[href*='/in/']")].map((a) => a.href.split("?")[0]).slice(0, 12).join("|");
+    const profileSignatureAfter = [...new Set([...document.querySelectorAll("a[href*='/in/']")].map((a) => normalizeProfileHref(a.href)).filter(Boolean))].slice(0, 12).join("|");
     const changed = location.href !== before || (!!activeAfter && (activeAfter.innerText || activeAfter.textContent || "").trim() !== activeText) || pageFromLabel(activeAfter) > pageNow || (!!profileSignatureAfter && profileSignatureAfter !== profileSignatureBefore);
     log(changed ? `Paginación · página nueva detectada: ${location.href}` : "Paginación · se pulsó Next pero no cambió la página.");
     return changed;
@@ -553,6 +796,14 @@ function startAutomation(maxActions, keywords, extractOnly, enrichmentConcurrenc
   const waitForPageEnrichment = async (profileLinks) => {
     let announced = false;
     while (!state.stopped) {
+      if (document.visibilityState === "hidden") {
+        const pendingCount = [...profileLinks].filter((href) => {
+          const row = state.rows.find((item) => item.link === href);
+          return row && ["pending", "queued", "processing"].includes(row.enrichment_status);
+        }).length;
+        if (pendingCount) log(`Enriquecimiento · búsqueda en pestaña oculta; ${pendingCount} perfil(es) quedan en cola y se continúa con la página siguiente.`);
+        return true;
+      }
       const pending = [...profileLinks].filter((href) => {
         const row = state.rows.find((item) => item.link === href);
         return row && ["pending", "queued", "processing"].includes(row.enrichment_status);
@@ -568,32 +819,42 @@ function startAutomation(maxActions, keywords, extractOnly, enrichmentConcurrenc
     return false;
   };
   const getScroller = (anchor) => {
+    const learned = useLearnedSelector("scroll").find((el) => el.contains(anchor) && visible(el)
+      && el.clientHeight > 160 && el.scrollHeight - el.clientHeight > 24 && getComputedStyle(el).overflowY !== "visible");
+    if (learned) return learned;
+    const scrollable = (el) => el && el.clientHeight > 160 && el.scrollHeight - el.clientHeight > 24 && getComputedStyle(el).overflowY !== "visible";
     let node = anchor;
     while (node && node !== document.body && node !== document.documentElement) {
-      const style = getComputedStyle(node);
-      if (node.scrollHeight > node.clientHeight + 80 && /(auto|scroll|overlay)/.test(style.overflowY)) return node;
+      if (scrollable(node)) { rememberSelector("scroll", node); return node; }
       node = node.parentElement;
     }
-    const pageRoot = document.querySelector("main") || document.body;
-    const nestedScroller = [...pageRoot.querySelectorAll("*")]
-      .filter((el) => el.scrollHeight > el.clientHeight + 100 && el.clientHeight > 100 && visible(el))
-      .sort((a, b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight))[0];
-    if (nestedScroller) return nestedScroller;
+    const containingScrollers = [...document.querySelectorAll("*")]
+      .filter((el) => scrollable(el) && visible(el) && (!anchor || el.contains(anchor)))
+      .sort((a, b) => (a.scrollHeight - a.clientHeight) - (b.scrollHeight - b.clientHeight));
+    if (containingScrollers.length) { rememberSelector("scroll", containingScrollers[0]); return containingScrollers[0]; }
+    rememberSelector("scroll", document.scrollingElement || document.documentElement);
     return document.scrollingElement || document.documentElement;
   };
   const scrollOneStep = async (anchor) => {
     const scroller = getScroller(anchor);
     const isDocument = scroller === document.scrollingElement || scroller === document.documentElement;
     const before = isDocument ? window.scrollY : scroller.scrollTop;
-    const step = Math.max(450, Math.floor((isDocument ? window.innerHeight : scroller.clientHeight) * 0.68));
-    if (isDocument) window.scrollBy({ top: step, behavior: "smooth" });
-    else scroller.scrollBy({ top: step, behavior: "smooth" });
+    const viewportBefore = isDocument ? window.innerHeight : scroller.clientHeight;
+    const step = Math.max(450, Math.floor(viewportBefore * 0.68));
+    const anchorRect = anchor?.getBoundingClientRect();
+    if (anchorRect && anchorRect.top >= window.innerHeight - 20) anchor.scrollIntoView({ block: "center", behavior: "auto" });
+    else if (isDocument) window.scrollBy({ top: step, behavior: "auto" });
+    else scroller.scrollBy({ top: step, behavior: "auto" });
     await sleep(1150);
     const after = isDocument ? window.scrollY : scroller.scrollTop;
     const extent = isDocument ? document.documentElement.scrollHeight : scroller.scrollHeight;
     const viewport = isDocument ? window.innerHeight : scroller.clientHeight;
     const position = isDocument ? window.scrollY : scroller.scrollTop;
-    return { moved: Math.abs(after - before) > 3, atBottom: position + viewport >= extent - 80, position, extent };
+    const maxScroll = Math.max(0, extent - viewport);
+    const offscreenResults = [...document.querySelectorAll(contactCardSelector)].filter((card) => visible(card) && card.getBoundingClientRect().top >= window.innerHeight).length;
+    const atPhysicalBottom = maxScroll <= 24 || position + viewport >= extent - 80;
+    const anchorMoved = !!anchorRect && anchor.getBoundingClientRect().top < anchorRect.top - 3;
+    return { moved: Math.abs(after - before) > 3 || anchorMoved, atBottom: atPhysicalBottom && offscreenResults === 0, position, extent, viewport, offscreenResults };
   };
   (async () => {
     try {
@@ -601,18 +862,82 @@ function startAutomation(maxActions, keywords, extractOnly, enrichmentConcurrenc
       if (showAll) { showAll.click(); await sleep(1200); log("Expandido Show all antes de recorrer tarjetas."); }
       let idle = 0, bottomRounds = 0;
       let pageProfileLinks = new Set();
+      let processedMatchesOnPage = new Set();
       const noConnectLogged = new Set();
       const limitReached = () => state.max > 0 && (extractOnly ? state.rows.length >= state.max : state.count >= state.max);
       while (!state.stopped && !limitReached()) {
         if (checkLimits()) break;
+        const pageKey = `${location.pathname}?page=${new URL(location.href).searchParams.get("page") || "1"}`;
+        if (learnedSelectorPage !== pageKey) {
+          learnedSelectorPage = pageKey;
+          learnedSelectorLogs = new Set();
+          log(`Autoaprendizaje · calibrando selectores en página ${new URL(location.href).searchParams.get("page") || "1"} antes del escaneo.`);
+          probeSelectorHints();
+        }
         const exactContactCards = [...document.querySelectorAll(contactCardSelector)];
-        const cards = isSearch && exactContactCards.length
-          ? exactContactCards
+        let cards = isSearch && exactContactCards.length
+          ? [...exactContactCards]
           : [...new Set([
               ...document.querySelectorAll("li, .artdeco-card, .discover-entity-type-card, [data-view-name*='search-result'], [data-view-name*='recommendation']"),
               ...[...document.querySelectorAll("button, a[role='button'], [role='button'], [tabindex]")].map(getCard)
             ])];
-        log(`Escaneo · ${cards.length} contenedores de ficha detectados; inspeccionando coincidencias visibles.`);
+        if (isSearch) {
+          const candidateCards = new Set(cards);
+          // The obfuscated class selector is incomplete on some LinkedIn layouts.
+          // Always add cards discovered from each profile link and its nearby action.
+          const resultProfileLinks = new Set(document.querySelectorAll("main a[href*='/in/']"));
+          // Current LinkedIn result cards expose the profile link through this
+          // inner node even when the older card class has changed.
+          const profileNodes = [...document.querySelectorAll("div.aaaayq > a.aaamic > div.aaal6d")];
+          for (const node of profileNodes) {
+            const link = node.closest("a[href*='/in/']");
+            if (link) resultProfileLinks.add(link);
+            const candidate = getCard(node);
+            if (candidate) candidateCards.add(candidate);
+          }
+          const genericXpathNodes = hintElements(selectorHintCatalog.card.find((hint) => hint.type === "xpath"));
+          for (const node of genericXpathNodes) {
+            const candidate = getCard(node);
+            if (candidate) candidateCards.add(candidate);
+          }
+          for (const link of resultProfileLinks) {
+            const candidate = getCard(link);
+            if (candidate) candidateCards.add(candidate);
+          }
+          const learnedCard = learnBestCardSelector(candidateCards);
+          if (learnedCard?.selector) {
+            const selectorMatches = [...document.querySelectorAll(learnedCard.selector)];
+            for (const candidate of selectorMatches) candidateCards.add(candidate);
+            const sample = selectorMatches.find((candidate) => {
+              const links = new Set([...candidate.querySelectorAll("a[href*='/in/']")].map((a) => normalizeProfileHref(a.href)).filter(Boolean));
+              return links.size === 1;
+            });
+            if (sample) {
+              learnedSelectors.card = learnedCard.selector;
+              state.learnedSelectors = { ...learnedSelectors };
+              if (!learnedSelectorLogs.has("card")) {
+                learnedSelectorLogs.add("card");
+                log(`Autoaprendizaje · selector fichas=${learnedCard.selector} · cobertura=${learnedCard.hrefCount} perfiles`);
+              }
+            }
+          }
+          const bestCardByHref = new Map();
+          for (const candidate of candidateCards) {
+            const profileLinks = [...new Set([...candidate.querySelectorAll("a[href*='/in/']")].map((a) => normalizeProfileHref(a.href)).filter(Boolean))];
+            if (profileLinks.length !== 1) continue;
+            const href = profileLinks[0];
+            const detail = getKeywordText(candidate);
+            const score = Math.min(detail.length, 1800) + (getCurrentText(candidate) ? 500 : 0) + (getHeadlineText(candidate) ? 250 : 0);
+            const currentBest = bestCardByHref.get(href);
+            if (!currentBest || score > currentBest.score) bestCardByHref.set(href, { card: candidate, score });
+          }
+          if (bestCardByHref.size) cards = [...bestCardByHref.values()].map((entry) => entry.card);
+        }
+        const uniqueProfileCount = new Set(cards.map(profileHref).filter(Boolean)).size;
+        const visibleProfileLinkCount = isSearch
+          ? new Set([...document.querySelectorAll("main a[href*='/in/'], div.aaaayq > a.aaamic[href*='/in/']")].map((link) => normalizeProfileHref(link.href)).filter(Boolean)).size
+          : uniqueProfileCount;
+        log(`Escaneo · ${cards.length} fichas únicas de ${uniqueProfileCount} perfiles detectadas (${visibleProfileLinkCount} enlaces de perfil en resultados); revisando keywords.`);
         let didAction = false;
         for (const card of cards) {
           if (state.stopped || limitReached()) break;
@@ -620,10 +945,30 @@ function startAutomation(maxActions, keywords, extractOnly, enrichmentConcurrenc
           if (!keywordText.trim()) continue;
           const matchedKeyword = normalized.find((word) => normalizedText.includes(word.toLocaleLowerCase()));
           if (!matchedKeyword) continue;
+          const keywordElement = [...card.querySelectorAll("div.aaalis > p.aaalje > span, div.aaalis p.aaalje > span, p.aaalje > span, p,span,div")]
+            .filter((el) => (el.innerText || el.textContent || "").toLocaleLowerCase().includes(matchedKeyword.toLocaleLowerCase()))
+            .sort((a, b) => (a.innerText || a.textContent || "").length - (b.innerText || b.textContent || "").length)[0];
+          if (keywordElement) rememberSelector("keyword", keywordElement, card);
           const href = profileHref(card);
-          log(`Coincidencia · keyword="${matchedKeyword}" · titular/cargo/Current="${keywordText.replace(/\s+/g, " ").slice(0, 180)}" · perfil=${href || "sin enlace"}`);
+          if (href && processedMatchesOnPage.has(href)) continue;
+          if (href) processedMatchesOnPage.add(href);
+          log(`Coincidencia · keyword="${matchedKeyword}" · titular="${keywordText.replace(/\s+/g, " ").slice(0, 180)}" · perfil=${href || "sin enlace"}`);
           if (href && !state.rows.some((r) => r.link === href)) extractRow(card, text, href, cards);
           if (href && state.rows.some((r) => r.link === href)) pageProfileLinks.add(href);
+          if (href && state.enrichmentConcurrency === 1) {
+            const row = state.rows.find((item) => item.link === href);
+            if (row && ["pending", "queued", "processing"].includes(row.enrichment_status)) {
+              if (document.visibilityState === "hidden") {
+                log(`Enriquecimiento · búsqueda en segundo plano; ${row.name || href} queda en cola y continúa el escaneo.`);
+              } else {
+                log(`Enriquecimiento secuencial · esperando a terminar ${row.name || href} antes de la siguiente ficha.`);
+                while (!state.stopped && document.visibilityState !== "hidden" && ["pending", "queued", "processing"].includes(row.enrichment_status)) await sleep(250);
+                if (document.visibilityState === "hidden" && ["pending", "queued", "processing"].includes(row.enrichment_status))
+                  log(`Enriquecimiento · búsqueda en segundo plano; ${row.name || href} queda en cola y el escaneo continúa.`);
+              }
+            }
+          }
+          if (state.stopped) break;
           if (extractOnly) {
             if (href && state.rows.some((r) => r.link === href)) {
               state.message = `Perfil extraído · ${state.rows.length}${state.max ? ` de ${state.max}` : ""}`;
@@ -648,6 +993,7 @@ function startAutomation(maxActions, keywords, extractOnly, enrichmentConcurrenc
             continue;
           }
           clicked.add(control); if (href) seenProfiles.add(href);
+          rememberSelector("connect", control, card.contains(control) ? card : document);
           const action = (control.innerText || control.getAttribute("aria-label") || "").trim();
           const searchUrlBeforeClick = location.href;
           log(`Clic preparado · Connect · control=${control.tagName.toLowerCase()} texto exacto · ficha=${href || "no detectada"}`);
@@ -674,19 +1020,23 @@ function startAutomation(maxActions, keywords, extractOnly, enrichmentConcurrenc
         }
         if (state.stopped) break;
         // Keep advancing through the actual feed scroller, including nested LinkedIn result panels.
-        const anchor = cards.find((card) => card.querySelector("a[href*='/in/']")) || document.querySelector("main") || document.body;
+        const anchor = cards.filter((card) => card.querySelector("a[href*='/in/']") && card.getBoundingClientRect().top >= window.innerHeight)
+          .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)[0]
+          || cards.find((card) => card.querySelector("a[href*='/in/']") && inViewport(card))
+          || cards.find((card) => card.querySelector("a[href*='/in/']"))
+          || document.querySelector("main") || document.body;
         const scroll = await scrollOneStep(anchor);
         idle = didAction ? 0 : idle + 1;
         if (scroll.atBottom && !didAction && !scroll.moved) bottomRounds++; else bottomRounds = 0;
         if (!scroll.moved && !scroll.atBottom) { log(`Scroll · no avanzó el contenedor (posición ${scroll.position}/${scroll.extent}).`); await sleep(800); }
-        log(`Scroll · ${scroll.position}/${scroll.extent}${scroll.atBottom ? " · final del contenedor" : " · avanzando por resultados"}`);
+        log(`Scroll · ${scroll.position}+${scroll.viewport}/${scroll.extent}${scroll.atBottom ? " · final del contenedor" : ` · avanzando por resultados · fichas fuera de vista=${scroll.offscreenResults}`}`);
         if (scroll.atBottom && didAction) log("Recorrido · se procesaron las tarjetas visibles al llegar al final; comprobando carga adicional.");
         if (isSearch && bottomRounds >= 3) {
           // Allow lazy-loaded cards to render before deciding this page is exhausted.
           await sleep(1400);
           if (!await waitForPageEnrichment(pageProfileLinks)) break;
           const advanced = await paginate();
-          if (advanced) { bottomRounds = 0; idle = 0; seenProfiles.clear(); pageProfileLinks = new Set(); continue; }
+          if (advanced) { bottomRounds = 0; idle = 0; seenProfiles.clear(); pageProfileLinks = new Set(); processedMatchesOnPage = new Set(); continue; }
           state.message = "No se encontró otra página de resultados."; log(state.message); break;
         }
         if (idle >= 8 && !isSearch && scroll.atBottom) { state.message = "No hay más acciones visibles por ahora."; log(state.message); idle = 0; await sleep(2200); }
@@ -703,6 +1053,12 @@ function startAutomation(maxActions, keywords, extractOnly, enrichmentConcurrenc
   return { started: true };
 }
 function stopAutomation() { const s = window.__ceoAutoFollow; if (!s) return { running: false }; s.stopped = true; s.message = "Deteniendo…"; s.logs.push(`${new Date().toLocaleTimeString()} Detención solicitada desde la GUI.`); return { running: s.running }; }
+function clearAutomationData() {
+  const s = window.__ceoAutoFollow;
+  if (s?.running) return { cleared: false, reason: "Detén la ejecución antes de limpiar los datos." };
+  if (s) { s.rows = []; s.logs = []; s.count = 0; s.learnedSelectors = {}; s.message = "Datos limpiados."; }
+  return { cleared: true };
+}
 function getAutomationStatus() { const s = window.__ceoAutoFollow; return s ? { running: s.running, count: s.count, rows: s.rows, logs: s.logs, message: s.message } : null; }
 async function refreshStatus() {
   try { const s = await runOnPage(getAutomationStatus); if (!s) return;
@@ -714,6 +1070,7 @@ async function refreshStatus() {
     const pendingEnrichment = waiting + enrichmentInFlight.size;
     els.downloadCsv.textContent = pendingEnrichment ? `Enriqueciendo (${pendingEnrichment})` : `Descargar CSV (${s.rows?.length || 0})`;
     els.downloadCsv.disabled = !(s.rows?.length) || pendingEnrichment > 0;
+    els.clearData.disabled = s.running || pendingEnrichment > 0;
     const logText = (s.logs || []).join("\n");
     if (els.logOutput.value !== logText) { const wasAtBottom = els.logOutput.scrollTop + els.logOutput.clientHeight >= els.logOutput.scrollHeight - 8; els.logOutput.value = logText; if (wasAtBottom) els.logOutput.scrollTop = els.logOutput.scrollHeight; }
     setStatus(pendingEnrichment ? `${s.message} · Enriqueciendo perfiles; quedan ${pendingEnrichment}.` : s.message); els.start.disabled = s.running; els.stop.disabled = !s.running;
@@ -738,6 +1095,16 @@ els.copyLog.addEventListener("click", async () => {
     const text = els.logOutput.value || "No hay logs de ejecución todavía.";
     await navigator.clipboard.writeText(text); els.copyLog.textContent = "Copiado"; setTimeout(() => { els.copyLog.textContent = "Copiar log"; }, 1400);
   } catch { els.logOutput.focus(); els.logOutput.select(); document.execCommand("copy"); setStatus("Log seleccionado o copiado. Si no se copió, usa Ctrl+C."); }
+});
+els.clearData.addEventListener("click", async () => {
+  if (!window.confirm("¿Borrar los perfiles recopilados, contadores y registro de ejecución?")) return;
+  try {
+    const result = await runOnPage(clearAutomationData);
+    if (!result?.cleared) { setStatus(result?.reason || "No se pudieron limpiar los datos."); return; }
+    els.total.textContent = "0"; els.emailCount.textContent = "0"; els.websiteCount.textContent = "0";
+    els.logOutput.value = ""; els.downloadCsv.textContent = "Descargar CSV (0)"; els.downloadCsv.disabled = true;
+    setStatus("Datos de esta ejecución eliminados.");
+  } catch { setStatus("Abre LinkedIn para limpiar los datos de la ejecución."); }
 });
 els.downloadCsv.addEventListener("click", async () => {
   try {

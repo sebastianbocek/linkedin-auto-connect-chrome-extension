@@ -41,3 +41,4 @@ button.primary { background: #11694e; border-color: #11694e; color: white; font-
 .info ol { padding-left: 18px; }
 .guidance { background: #f1f7f3; }
 .foot { text-align: center; font-size: 10px; line-height: 1.5; color: #718179; margin: 12px 4px 0; }
+.clear-data { color: #8b3434; border-color: #e5caca; background: #fffafa; margin-top: 12px; }

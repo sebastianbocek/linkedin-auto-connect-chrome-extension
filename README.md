@@ -9,9 +9,9 @@ Developed by [Sebastián Bocek](https://github.com/sebastianbocek).
 ## How to use
 
 1. Open a LinkedIn **People** search in the tab you want to process. For example: [B2B AI people search](https://www.linkedin.com/search/results/people/?keywords=b2b%20ai&origin=CLUSTER_EXPANSION). The search URL sets the result set; the extension keywords filter the profiles it processes.
-2. Open the **LinkedIn Auto-Connect** extension and add the keywords you want to find in profile headlines, titles, and current-position text.
+2. Open the **LinkedIn Auto-Connect** extension and add the keywords to look for in the headline shown directly below each person's name.
 3. Set the maximum number of connections or profiles to extract. Enter `0` for unlimited processing.
-4. Choose how many profile tabs can be enriched at once (default: `5`). For each matching profile, the extension opens the profile in a background tab, clicks **Contact info** on that profile, reads any available email and website, and closes the tab. It does not force LinkedIn's overlay URL. The people-search tab stays in place, and the extension waits for that page's enrichment work before advancing. Fields remain blank when the member has not made that information available.
+4. Choose how many profile tabs can be enriched at once (default: `5`). For each matching profile, the extension opens the profile in a background tab, clicks **Contact info** on that profile, reads any available email and website, and closes the tab. It does not force LinkedIn's overlay URL. When the search tab is active, it waits for that page's enrichment work before advancing. If you switch away and the popup closes, scanning can continue with enrichment queued; reopen the extension to resume queued profiles. Fields remain blank when the member has not made that information available.
 5. Leave **No conectar, solo extraer** unchecked to connect with matching profiles and collect them in the CSV. Turn it on to collect profiles without sending invitations.
 6. Click **Iniciar**. The extension processes the results and advances to the next page when needed.
 7. Click **Descargar CSV** after profile enrichment finishes to save the collected profile data.
@@ -33,11 +33,12 @@ You can also use the extension on LinkedIn **My Network → Grow** suggestions.
 ## Features
 
 - Add and remove profile keywords in the popup. Matching is case-insensitive and accepts a keyword within a longer phrase, such as `B2B` in `B2B Outbound`.
-- Checks the profile headline, title, and current-position text in each result card.
+- Checks the profile headline shown directly below the person's name in each result card.
+- Calibrates supplied and automatically discovered selectors against each page before scanning. The activity log shows the selectors that match the current LinkedIn layout.
 - Clicks **Connect** only. Profiles marked **Pending**, **Follow**, or **Message** are logged and skipped.
 - If LinkedIn asks whether to add a note, selects **Send without a note** and continues.
 - Scrolls through people-search results and advances to the next page when the current results are exhausted.
-- Matching profiles are collected for CSV export by default. Columns are name, headline, location, LinkedIn URL, contact status, current company, contact email, and contact website. The extension opens each profile in a background tab, clicks **Contact info**, and reads the email and website links shown in the panel. It closes the profile tab after extraction, even if a field is unavailable or reading fails. Configure up to 20 concurrent tabs (default: 5). The search tab stays in place, and pagination waits until the current page's enrichment work finishes.
+- Matching profiles are collected for CSV export by default. Columns are name, headline, location, LinkedIn URL, contact status, current company, contact email, and contact website. The extension opens each profile in a background tab, clicks **Contact info**, and reads the email and website links shown in the panel. It closes the profile tab after extraction, even if a field is unavailable or reading fails. Configure up to 20 concurrent tabs (default: 5). Pagination waits for enrichment while the search tab is active; queued enrichment resumes when the popup is reopened after a tab switch.
 - The **No conectar, solo extraer** mode does not send connection invitations and counts extracted profiles toward the configured limit.
 - View and copy the activity log from the popup.
 - Stops when LinkedIn displays its weekly connection invitation limit.
@@ -55,9 +56,9 @@ This tool automates actions on LinkedIn. Review your configuration and use it th
 ### Cómo usar
 
 1. Abre en la pestaña de Chrome una búsqueda de personas de LinkedIn. Por ejemplo: [búsqueda de personas B2B AI](https://www.linkedin.com/search/results/people/?keywords=b2b%20ai&origin=CLUSTER_EXPANSION). La URL determina los resultados; las keywords de la extensión filtran los perfiles que procesará.
-2. Abre la extensión **LinkedIn Auto-Connect** y agrega las keywords que quieras buscar en los titulares, cargos y puestos actuales de los perfiles.
+2. Abre la extensión **LinkedIn Auto-Connect** y agrega las keywords que quieras buscar en el titular que aparece justo debajo del nombre de cada perfil.
 3. Define el máximo de conexiones o perfiles para extraer. Escribe `0` para continuar sin límite.
-4. Define cuántas pestañas de perfil se pueden enriquecer a la vez (por defecto: `5`). Para cada perfil coincidente, la extensión abre el perfil en segundo plano, pulsa **Contact info**, lee el email y el website disponibles y cierra la pestaña. No fuerza la URL del overlay de LinkedIn. La pestaña de búsqueda permanece en su lugar y espera a que se complete el enriquecimiento de esa página antes de avanzar. Los campos quedan vacíos si el perfil no publicó esa información.
+4. Define cuántas pestañas de perfil se pueden enriquecer a la vez (por defecto: `5`). Para cada perfil coincidente, la extensión abre el perfil en segundo plano, pulsa **Contact info**, lee el email y el website disponibles y cierra la pestaña. No fuerza la URL del overlay de LinkedIn. Con la búsqueda activa, espera a que se complete el enriquecimiento de esa página antes de avanzar. Si cambias de pestaña y se cierra el popup, el escaneo puede continuar y deja el enriquecimiento en cola; vuelve a abrir la extensión para reanudarlo. Los campos quedan vacíos si el perfil no publicó esa información.
 5. Deja desmarcada **No conectar, solo extraer** para conectar con perfiles coincidentes y recopilar sus datos en el CSV. Actívala para extraer perfiles sin enviar invitaciones.
 6. Pulsa **Iniciar**. La extensión procesa los resultados y avanza a la página siguiente cuando corresponde.
 7. Pulsa **Descargar CSV** cuando termine el enriquecimiento para guardar los datos recopilados.
@@ -73,10 +74,11 @@ También puedes usar la extensión en las sugerencias de **My Network → Grow**
 ### Funciones
 
 - Agrega o quita keywords desde la interfaz. La coincidencia no distingue mayúsculas y acepta una keyword dentro de una frase más larga, por ejemplo `B2B` en `B2B Outbound`.
-- Busca en el titular, cargo y puesto actual de cada ficha.
+- Busca las keywords en el titular que aparece debajo del nombre de cada ficha.
+- Calibra antes de cada página los selectores compartidos y los que detecta automáticamente; el registro muestra cuáles coinciden con el diseño actual de LinkedIn.
 - Pulsa únicamente **Connect**. Registra y omite perfiles con estado **Pending**, **Follow** o **Message**.
 - Si LinkedIn pregunta si quieres agregar una nota, pulsa **Send without a note** y continúa.
-- Exporta nombre, titular, ubicación, enlace de LinkedIn, estado de contacto, empresa actual, email de contacto y website de contacto al CSV. Abre el perfil en segundo plano, pulsa **Contact info** y lee los enlaces de email y website que aparecen en el panel. La pestaña se cierra después de la extracción, aunque falte un dato o se produzca un error. Puedes configurar hasta 20 pestañas simultáneas (por defecto: 5); la búsqueda permanece en su pestaña.
+- Exporta nombre, titular, ubicación, enlace de LinkedIn, estado de contacto, empresa actual, email de contacto y website de contacto al CSV. Abre el perfil en segundo plano, pulsa **Contact info** y lee los enlaces de email y website que aparecen en el panel. La pestaña se cierra después de la extracción, aunque falte un dato o se produzca un error. Puedes configurar hasta 20 pestañas simultáneas (por defecto: 5). Con la búsqueda activa espera a que termine el enriquecimiento antes de paginar; si el popup se cierra al cambiar de pestaña, deja las tareas en cola y las reanuda al abrirlo de nuevo.
 - Muestra contadores de conexiones, emails y websites obtenidos en la interfaz.
 - Muestra un registro de actividad que puedes copiar desde la interfaz.
 - Se detiene si LinkedIn muestra el límite semanal de invitaciones.

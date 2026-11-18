@@ -28,7 +28,7 @@
     <label class="limit" for="enrichmentConcurrency"><span>Pestañas enriquecidas simultáneas</span>
       <input id="enrichmentConcurrency" type="number" min="1" max="20" step="1" value="5" />
     </label>
-    <small class="field-help">Abre cada perfil coincidente en una pestaña aparte para buscar email y website en Contact info.</small>
+    <small class="field-help">Abre cada perfil coincidente en una pestaña aparte. Con 1, completa cada perfil antes de pasar al siguiente.</small>
     <section class="info keyword-config">
       <h2>Keywords de perfiles</h2>
       <div id="keywords"></div>
@@ -45,8 +45,8 @@
     <button id="start" class="primary">▶ Iniciar</button>
     <button id="stop" class="secondary">■ Detener</button>
     <section class="info">
-      <h2>Keywords</h2>
-      <p>Se comparan con el titular, cargo y puesto actual de cada ficha.</p>
+      <h2>Dónde se buscan las keywords</h2>
+      <p>Se comparan con el titular que aparece debajo del nombre en cada ficha.</p>
     </section>
     <section class="info guidance">
       <h2>Cómo usar</h2>
@@ -58,6 +58,7 @@
       </ol>
     </section>
     <p class="foot">Pulsa Follow o Connect en perfiles que coincidan. Connect puede iniciar una invitación; confirma manualmente cualquier paso posterior.</p>
+    <button id="clearData" class="clear-data" type="button" title="Borra perfiles, contadores y registro guardados en esta ejecución">Limpiar datos</button>
   </main>
   <script src="popup.js"></script>
 </body>
